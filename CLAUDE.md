@@ -75,5 +75,5 @@ In `ImportInscriptions/`:
 
 ## Git
 
-- Commits are GPG-signed and the passphrase cannot be entered from Claude Code: stage the files, then let the user run `git commit`.
-- Commit messages are in English, a single line, with no `Co-Authored-By`.
+- Commit messages: [gitmoji](https://gitmoji.dev/) prefix (Unicode emoji), English, a single line, no `Co-Authored-By`. Example: `🐛 Fix Excel dates read month-first`.
+- Commits are GPG-signed. If signing fails because pinentry cannot prompt, ask the user to run the commit.
