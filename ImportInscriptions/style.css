@@ -1,4 +1,4 @@
-/* Import inscriptions — styles limités à #ii-app pour ne pas toucher au reste d'IANSEO */
+/* Entry import — styles scoped to #ii-app so the rest of IANSEO is untouched */
 #ii-app { max-width: 1200px; margin: 12px auto; padding: 0 12px; font-size: 13px; color: #1d1d1b; }
 #ii-app h2 { margin: 0; font-size: 18px; }
 #ii-app h3 { display: inline; margin: 0 12px 0 0; font-size: 15px; }

@@ -1,0 +1,59 @@
+# Nightly build of main, published as the "nightly" pre-release (moving tag).
+# Installed modules on the nightly channel offer it as an update; the release name carries the version.
+name: nightly
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: nightly
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Skip if main has not changed since the last nightly
+        id: changed
+        run: |
+          last=$(git rev-parse -q --verify 'refs/tags/nightly^{commit}' || true)
+          if [ "$last" = "$(git rev-parse HEAD)" ] && [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "main unchanged since the last nightly"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tests
+        if: steps.changed.outputs.skip != 'true'
+        run: node --test tests/*.test.js
+
+      - name: Version
+        if: steps.changed.outputs.skip != 'true'
+        id: version
+        run: |
+          tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          v=$(node scripts/nightly-version.js "$tag" "$(date -u +%Y%m%d)" "$(git rev-parse --short=7 HEAD)")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          jq --arg v "$v" '.version = $v' ImportInscriptions/version.json > version.tmp
+          mv version.tmp ImportInscriptions/version.json
+
+      - name: Archive
+        if: steps.changed.outputs.skip != 'true'
+        run: zip -r ImportInscriptions.zip ImportInscriptions -x '*.DS_Store'
+
+      - name: Publish
+        if: steps.changed.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release delete nightly --yes --cleanup-tag || true
+          gh release create nightly ImportInscriptions.zip --prerelease --target "$(git rev-parse HEAD)" \
+            --title "$VERSION" --notes "Nightly build of main ($(git rev-parse --short=7 HEAD)). Not for competitions: use a stable release."

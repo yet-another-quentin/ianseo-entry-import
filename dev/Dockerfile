@@ -1,4 +1,4 @@
-# IANSEO de test (PHP + Apache) pour développer le module
+# Test IANSEO (PHP + Apache) to develop the module
 FROM php:8.2-apache
 RUN apt-get update && apt-get install -y --no-install-recommends libzip-dev libpng-dev libjpeg-dev libfreetype6-dev mariadb-client \
  && docker-php-ext-configure gd --with-freetype --with-jpeg \

@@ -1,5 +1,5 @@
-# Publie ImportInscriptions.zip dans la release quand un tag vX.Y.Z est poussé.
-# Le module installé détecte cette release et propose la mise à jour.
+# Stable release: pushing a vX.Y.Z tag publishes ImportInscriptions.zip as the "latest" release.
+# Installed modules on the stable channel offer it as an update.
 name: release
 
 on:
@@ -18,7 +18,7 @@ jobs:
       - name: Tests
         run: node --test tests/*.test.js
 
-      - name: Version depuis le tag
+      - name: Version from tag
         run: |
           v="${GITHUB_REF_NAME#v}"
           jq --arg v "$v" '.version = $v' ImportInscriptions/version.json > version.tmp
@@ -30,4 +30,4 @@ jobs:
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" ImportInscriptions.zip --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" ImportInscriptions.zip --title "$GITHUB_REF_NAME" --generate-notes --latest
