@@ -1,0 +1,53 @@
+/* Import inscriptions — styles limités à #ii-app pour ne pas toucher au reste d'IANSEO */
+#ii-app { max-width: 1200px; margin: 12px auto; padding: 0 12px; font-size: 13px; color: #1d1d1b; }
+#ii-app h2 { margin: 0; font-size: 18px; }
+#ii-app h3 { display: inline; margin: 0 12px 0 0; font-size: 15px; }
+#ii-app h4 { margin: 14px 0 4px; font-size: 13px; }
+#ii-app .ii-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+#ii-app .ii-box { background: #fff; border: 1px solid #d8d6d0; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+#ii-app .ii-box > h3 { display: block; margin-bottom: 10px; }
+#ii-app summary { cursor: pointer; }
+#ii-app .ii-drop { border: 2px dashed #c9c6be; border-radius: 8px; padding: 22px; text-align: center; color: #6b6a66; cursor: pointer; }
+#ii-app .ii-drop.over, #ii-app .ii-drop:focus { border-color: #2f6f4f; color: #1d1d1b; outline: none; }
+#ii-app .ii-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 6px 0; }
+#ii-app .ii-sep { flex: 0 0 12px; }
+#ii-app .ii-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px 16px; margin-top: 10px; }
+#ii-app .ii-grid label { display: flex; flex-direction: column; gap: 3px; color: #555; }
+#ii-app .ii-cols { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+#ii-app fieldset { border: 1px solid #d8d6d0; border-radius: 6px; margin: 0; padding: 4px 10px 8px; }
+#ii-app legend { color: #555; padding: 0 4px; }
+#ii-app .ii-chk { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+#ii-app select, #ii-app input[type=text], #ii-app input[type=number], #ii-app input[type=date], #ii-app textarea {
+  font: inherit; padding: 3px 6px; border: 1px solid #c9c6be; border-radius: 4px; background: #fff; }
+#ii-app textarea { width: 100%; font: 12px/1.4 Menlo, Consolas, monospace; white-space: pre; tab-size: 10; }
+#ii-app button { font: inherit; padding: 4px 10px; border: 1px solid #2f6f4f; border-radius: 4px; background: #fff; color: #2f6f4f; cursor: pointer; }
+#ii-app button:disabled { opacity: .5; cursor: default; }
+#ii-app button.ii-primary { background: #2f6f4f; color: #fff; padding: 7px 16px; font-weight: 600; }
+#ii-app button.ii-link { border: 0; padding: 0 2px; text-decoration: underline; background: none; }
+#ii-app .ii-tab.on { background: #2f6f4f; color: #fff; }
+#ii-app .ii-chip { border: 1px solid #d8d6d0; border-radius: 999px; padding: 2px 10px; }
+#ii-app .ii-chip.ii-over { border-color: #b3261e; color: #b3261e; }
+#ii-app .ii-scroll { overflow-x: auto; }
+#ii-app table.ii-t { border-collapse: collapse; }
+#ii-app table.ii-list { width: 100%; }
+#ii-app .ii-t th, #ii-app .ii-t td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #e6e4de; vertical-align: top; }
+#ii-app .ii-t th { color: #6b6a66; font-weight: 600; white-space: nowrap; }
+#ii-app tr.ii-error > td { background: #fbe9e7; }
+#ii-app tr.ii-warn > td { background: #fff4d6; }
+#ii-app tr.ii-excluded > td { color: #9a9893; }
+#ii-app tr.ii-editor > td { background: #f6f5f2; border-left: 3px solid #2f6f4f; }
+#ii-app .ii-form { padding: 6px 4px; }
+#ii-app .ii-nobase { border-top: 1px dashed #c9c6be; padding-top: 8px; }
+#ii-app .ii-search { margin: 8px 0; padding: 6px; background: #fff; border: 1px solid #e6e4de; border-radius: 6px; }
+#ii-app .ii-actions { margin-top: 10px; }
+#ii-app .ii-badge { display: inline-block; padding: 0 8px; border-radius: 999px; border: 1px solid #c9c6be; white-space: nowrap; }
+#ii-app .ii-nowrap { white-space: nowrap; }
+#ii-app .ii-e { color: #b3261e; }
+#ii-app .ii-w { color: #8a5a00; }
+#ii-app .ii-muted { color: #6b6a66; }
+#ii-app .ii-alert { border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; border: 1px solid; }
+#ii-app .ii-err { background: #fbe9e7; border-color: #e8b4ae; }
+#ii-app .ii-warn { background: #fff4d6; border-color: #ead49a; }
+#ii-app .ii-info { background: #e8f1fb; border-color: #b5cde8; }
+#ii-app .ii-ok { background: #e6f2eb; border-color: #a9cdb8; }
+#ii-app pre { white-space: pre-wrap; max-height: 200px; overflow: auto; }

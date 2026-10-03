@@ -1,0 +1,19 @@
+# Environnement de test : IANSEO_DIR = copie des sources IANSEO (elle sera modifiée : config.inc.php).
+# MODULE_DIR (facultatif) : autre copie du module, par ex. pour tester la mise à jour sans écraser les sources.
+#   IANSEO_DIR=/chemin/vers/copie-ianseo docker compose up -d --build   →  http://localhost:8088/
+services:
+  db:
+    image: mariadb:10.11
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: ianseo
+      MARIADB_USER: ianseo
+      MARIADB_PASSWORD: ianseo
+    command: --sql-mode=""
+  web:
+    build: .
+    depends_on: [db]
+    ports: ["8088:80"]
+    volumes:
+      - ${IANSEO_DIR:?copie des sources IANSEO}:/var/www/html
+      - ${MODULE_DIR:-../ImportInscriptions}:/var/www/html/Modules/Custom/ImportInscriptions
