@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const C = require('../ImportInscriptions/core.js');
+const C = require('../EntryImport/core.js');
 
 const PARA = ['OPCL', 'FECL', 'W1', 'HV1', 'HV2', 'HLCL', 'HLCO', 'SU1', 'SU2', 'CHCL', 'CHCO', 'CRCL', 'CRCO', 'OPCO', 'FECO'];
 const ctx = {

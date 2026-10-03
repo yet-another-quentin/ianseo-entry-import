@@ -16,4 +16,4 @@ services:
     ports: ["8088:80"]
     volumes:
       - ${IANSEO_DIR:?copy of the IANSEO sources}:/var/www/html
-      - ${MODULE_DIR:-../ImportInscriptions}:/var/www/html/Modules/Custom/ImportInscriptions
+      - ${MODULE_DIR:-../EntryImport}:/var/www/html/Modules/Custom/EntryImport

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-IANSEO module (archery competition management software) that imports entries in bulk from CSV/Excel (SportRegions export or any other). Code, identifiers and comments are in English. The UI is translated French/English (`ImportInscriptions/i18n.js` for the page, `ii_t()` in `lib.php` for server messages). Data values in profiles (SportRegions column headers, French bow names) stay as they appear in the files.
+IANSEO module (archery competition management software) that imports entries in bulk from CSV/Excel (SportRegions export or any other). Code, identifiers and comments are in English. The UI is translated French/English (`EntryImport/i18n.js` for the page, `ii_t()` in `lib.php` for server messages). Data values in profiles (SportRegions column headers, French bow names) stay as they appear in the files.
 
 ## Commands
 
@@ -27,7 +27,7 @@ cd dev && IANSEO_DIR=/path/to/copy docker compose up -d --build && IANSEO_DIR=/p
 
 **The module never writes to the archer tables.** The page builds "List load" lines and posts them to `Partecipants/ListLoad.php` (`txtList`, `TextList=1`, `OverwritePreviousArchers`); IANSEO imports and shows its own report. Keep it that way.
 
-In `ImportInscriptions/`:
+In `EntryImport/`:
 - `index.php`: IANSEO page (`Common/Templates/head.php`/`tail.php`). It injects `window.II_CONTEXT` (`ii_context()` in `lib.php`):
   - language;
   - qualification sessions, divisions and classes of the competition (with `ClDivisionsAllowed`);
@@ -57,7 +57,7 @@ In `ImportInscriptions/`:
 
 ## Persistence
 
-- **Per competition**: `getModuleParameter`/`setModuleParameter`, module `ImportInscriptions`, params `settings` and `corrections`. Stored values are JSON strings, never serialized PHP objects.
+- **Per competition**: `getModuleParameter`/`setModuleParameter`, module `EntryImport`, params `settings` and `corrections`. Stored values are JSON strings, never serialized PHP objects.
 - **Installation-wide**: `ii_get_global`/`ii_set_global` with `MpTournament = 0` in direct SQL. Used for `profiles`, `channel` and the `updateCheck` cache. `setModuleParameter` replaces an empty TourId with the open competition.
 - `MpParameter` is at most 30 characters.
 - **Correction key**: original license + last name + first name, normalised; identical rows get `#2`, `#3`… Changing this orphans saved corrections.
@@ -69,9 +69,9 @@ In `ImportInscriptions/`:
 - **Nightly**: `nightly.yml` (daily cron + manual run) rebuilds the `nightly` pre-release and moving tag when `main` changed.
   - Version `X.Y.(Z+1)-nightly.YYYYMMDD.sha` (`scripts/nightly-version.js`), stored in the **release name** because the tag is always `nightly`.
   - PHP `version_compare` puts it between `X.Y.Z` and `X.Y.(Z+1)`, so the next stable release is offered over it (`ii_is_update`).
-- **Archive**: every entry must be under `ImportInscriptions/` and `ImportInscriptions/version.json` must be present, otherwise `ii_update_install` refuses it.
+- **Archive**: every entry must be under `EntryImport/` and `EntryImport/version.json` must be present, otherwise `ii_update_install` refuses it.
 - **Install**: files are copied, not renamed (Windows/XAMPP locks). The backup is restored on failure.
-- The GitHub repo (`yet-another-quentin/ianseo-import-inscriptions`) must stay public: the module calls the API unauthenticated.
+- The GitHub repo (`yet-another-quentin/ianseo-entry-import`) must stay public: the module calls the API unauthenticated.
 
 ## Git
 

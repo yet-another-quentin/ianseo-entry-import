@@ -1,4 +1,4 @@
-# Stable release: pushing a vX.Y.Z tag publishes ImportInscriptions.zip as the "latest" release.
+# Stable release: pushing a vX.Y.Z tag publishes EntryImport.zip as the "latest" release.
 # Installed modules on the stable channel offer it as an update.
 name: release
 
@@ -21,13 +21,13 @@ jobs:
       - name: Version from tag
         run: |
           v="${GITHUB_REF_NAME#v}"
-          jq --arg v "$v" '.version = $v' ImportInscriptions/version.json > version.tmp
-          mv version.tmp ImportInscriptions/version.json
+          jq --arg v "$v" '.version = $v' EntryImport/version.json > version.tmp
+          mv version.tmp EntryImport/version.json
 
       - name: Archive
-        run: zip -r ImportInscriptions.zip ImportInscriptions -x '*.DS_Store'
+        run: zip -r EntryImport.zip EntryImport -x '*.DS_Store'
 
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" ImportInscriptions.zip --title "$GITHUB_REF_NAME" --generate-notes --latest
+        run: gh release create "$GITHUB_REF_NAME" EntryImport.zip --title "$GITHUB_REF_NAME" --generate-notes --latest

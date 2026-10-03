@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const I = require('../ImportInscriptions/i18n.js');
+const I = require('../EntryImport/i18n.js');
 const { nightlyVersion } = require('../scripts/nightly-version.js');
 
 test('French and English dictionaries have the same keys', () => {
@@ -12,7 +12,7 @@ test('French and English dictionaries have the same keys', () => {
 });
 
 test('every message key used by core.js and app.js exists', () => {
-  const dir = path.join(__dirname, '../ImportInscriptions');
+  const dir = path.join(__dirname, '../EntryImport');
   const code = ['core.js', 'app.js'].map(f => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n');
   const used = new Set();
   for (const m of code.matchAll(/\b(?:msg|th|t)\('([a-z]+\.[\w.]+|[a-z]+)'/g)) used.add(m[1]);

@@ -21,8 +21,8 @@ Tested with IANSEO 2025-02-10 (FR rules).
 
 ## Installation
 
-1. Download `ImportInscriptions.zip` from the [latest release](https://github.com/yet-another-quentin/ianseo-import-inscriptions/releases/latest).
-2. Unzip it into IANSEO's `Modules/Custom/` folder, so that you get `Modules/Custom/ImportInscriptions/index.php`.
+1. Download `EntryImport.zip` from the [latest release](https://github.com/yet-another-quentin/ianseo-entry-import/releases/latest).
+2. Unzip it into IANSEO's `Modules/Custom/` folder, so that you get `Modules/Custom/EntryImport/index.php`.
 
    | Installation | Folder |
    |---|---|
@@ -65,7 +65,7 @@ cd dev && IANSEO_DIR=/path/to/ianseo-copy docker compose up -d --build && IANSEO
 `seed.sh` loads the schema and creates the competition "TEST26" (FR indoor, 4 sessions, para divisions). It also adds fictitious licenses matching `tests/fixtures/sportregions.csv`. `Common/config.inc.php` must point to host `db`, with user and password `ianseo` and `ROOT_DIR='/'`.
 
 **Releases**:
-- **Stable**: push a `vX.Y.Z` tag. `.github/workflows/release.yml` runs the tests, writes the version into `version.json`, builds `ImportInscriptions.zip` and creates the release.
+- **Stable**: push a `vX.Y.Z` tag. `.github/workflows/release.yml` runs the tests, writes the version into `version.json`, builds `EntryImport.zip` and creates the release.
 - **Nightly**: `.github/workflows/nightly.yml` runs every night, or manually with *Run workflow*.
 
 ---
@@ -89,8 +89,8 @@ Module IANSEO qui importe en lot les inscriptions d'un concours de tir à l'arc 
 
 ### Installation
 
-1. Télécharger `ImportInscriptions.zip` depuis la [dernière release](https://github.com/yet-another-quentin/ianseo-import-inscriptions/releases/latest).
-2. Décompresser l'archive dans le dossier `Modules/Custom/` d'IANSEO, pour obtenir `Modules/Custom/ImportInscriptions/index.php`. Les dossiers selon l'installation sont dans le tableau de la partie anglaise.
+1. Télécharger `EntryImport.zip` depuis la [dernière release](https://github.com/yet-another-quentin/ianseo-entry-import/releases/latest).
+2. Décompresser l'archive dans le dossier `Modules/Custom/` d'IANSEO, pour obtenir `Modules/Custom/EntryImport/index.php`. Les dossiers selon l'installation sont dans le tableau de la partie anglaise.
 3. Ouvrir une compétition. Le module se trouve dans **Participants › Synchronisation › Import inscriptions (CSV/Excel)**.
 
 ### Utilisation

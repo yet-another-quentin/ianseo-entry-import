@@ -7,7 +7,7 @@
 
 require_once('Common/Lib/Fun_Modules.php');
 
-const II_MODULE = 'ImportInscriptions';
+const II_MODULE = 'EntryImport';
 
 function ii_version_info() {
 	$v = @json_decode(@file_get_contents(__DIR__ . '/version.json'), true);
@@ -325,7 +325,7 @@ function ii_read_spreadsheet($path) {
 // ---------- updates from GitHub releases ----------
 
 function ii_http_get($url, $accept = '*/*') {
-	$ua = 'IANSEO-ImportInscriptions';
+	$ua = 'IANSEO-EntryImport';
 	if (function_exists('curl_init')) {
 		$ch = curl_init($url);
 		curl_setopt_array($ch, array(

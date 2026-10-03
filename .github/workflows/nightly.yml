@@ -41,12 +41,12 @@ jobs:
           tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
           v=$(node scripts/nightly-version.js "$tag" "$(date -u +%Y%m%d)" "$(git rev-parse --short=7 HEAD)")
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          jq --arg v "$v" '.version = $v' ImportInscriptions/version.json > version.tmp
-          mv version.tmp ImportInscriptions/version.json
+          jq --arg v "$v" '.version = $v' EntryImport/version.json > version.tmp
+          mv version.tmp EntryImport/version.json
 
       - name: Archive
         if: steps.changed.outputs.skip != 'true'
-        run: zip -r ImportInscriptions.zip ImportInscriptions -x '*.DS_Store'
+        run: zip -r EntryImport.zip EntryImport -x '*.DS_Store'
 
       - name: Publish
         if: steps.changed.outputs.skip != 'true'
@@ -55,5 +55,5 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           gh release delete nightly --yes --cleanup-tag || true
-          gh release create nightly ImportInscriptions.zip --prerelease --target "$(git rev-parse HEAD)" \
+          gh release create nightly EntryImport.zip --prerelease --target "$(git rev-parse HEAD)" \
             --title "$VERSION" --notes "Nightly build of main ($(git rev-parse --short=7 HEAD)). Not for competitions: use a stable release."
