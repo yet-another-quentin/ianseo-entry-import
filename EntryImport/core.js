@@ -26,7 +26,13 @@
     { key: 'targetFace' },
     { key: 'classification' },
     { key: 'paraCategory' },
+    { key: 'email' },
+    { key: 'registeredAt' },
+    { key: 'comment', multi: true, join: true },
   ];
+  // Fields of the row key fallback (rows without license nor name): the original list, so saved keys stay valid.
+  const KEY_FIELDS = ['license', 'session', 'division', 'category', 'sex', 'lastName', 'firstName', 'club', 'birthDate',
+    'targetFace', 'classification', 'paraCategory'];
 
   // Common bow names (normalised) → IANSEO FR divisions.
   const DEFAULT_DIVISIONS = {
@@ -45,6 +51,8 @@
         license: ['Numéro de licence'], session: ['Départ'], division: ['Arme'], category: ["Catégorie d'age"],
         sex: ['Sexe'], lastName: ['Nom'], firstName: ['Prénom'], club: ['Club'], birthDate: ['Date de naissance'],
         targetFace: ['Blason'], classification: ['Classement'], paraCategory: ['Catégorie Handisport'],
+        email: ['Email'], registeredAt: ['Date et heure inscription'],
+        comment: ['Renseignements supplémentaires', 'Informations complémentaires'],
       },
       values: { division: { 'Classique': 'CL', 'Compound': 'CO', 'Arc nu': 'BB' } },
     },
@@ -58,6 +66,10 @@
         club: ['club', 'structure'], birthDate: ['date de naissance', 'naissance', 'date of birth', 'birth date', 'dob'],
         targetFace: ['blason', 'target face'], classification: ['classement', 'classification'],
         paraCategory: ['categorie handisport', 'handisport', 'para category'],
+        email: ['email', 'e-mail', 'mail', 'courriel', 'adresse email', 'adresse mail'],
+        registeredAt: ['date et heure inscription', 'date inscription', "date d'inscription", 'registration date', 'registered'],
+        comment: ['commentaire', 'commentaires', 'remarque', 'remarques', 'comment', 'comments', 'renseignements supplementaires',
+          'informations complementaires'],
       },
       values: {},
     },
@@ -175,6 +187,15 @@
     }
   }
 
+  // Date and time, sortable: "01/09/2026 10:00" → "2026-09-01 10:00" ('' if no valid date).
+  function isoDateTime(v) {
+    const s = String(v == null ? '' : v).trim();
+    const d = isoDate(s);
+    if (!d) return '';
+    const m = s.match(/[ T](\d{1,2})[:h](\d{2})/);
+    return m ? `${d} ${m[1].padStart(2, '0')}:${m[2]}` : d;
+  }
+
   function clubCode(name) {
     return norm(name).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
   }
@@ -238,9 +259,13 @@
     const seen = {};
     return rows.map((r, i) => {
       const src = {};
-      for (const f of FIELDS) src[f.key] = f.key === 'session' ? sessionTokens(r, map.session || [], headers) : get(r, f.key);
+      for (const f of FIELDS) {
+        src[f.key] = f.key === 'session' ? sessionTokens(r, map.session || [], headers)
+          : f.join ? (map[f.key] || []).map(i => String(r[i] == null ? '' : r[i]).trim()).filter(Boolean).join(' / ')
+          : get(r, f.key);
+      }
       let key = [normLicense(src.license), norm(src.lastName), norm(src.firstName)].join('|');
-      if (key === '||') key = 'row:' + FIELDS.map(f => norm(Array.isArray(src[f.key]) ? src[f.key].join(',') : src[f.key])).join('|');
+      if (key === '||') key = 'row:' + KEY_FIELDS.map(k => norm(Array.isArray(src[k]) ? src[k].join(',') : src[k])).join('|');
       seen[key] = (seen[key] || 0) + 1;
       if (seen[key] > 1) key += '#' + seen[key];
       return { line: i + 2, key, src };
@@ -286,14 +311,200 @@
     return paras.includes(id) ? id : '';
   }
 
+  // ---------- target faces ----------
+  // Faces of the competition: [{id, name, classes (TfClasses, a LIKE pattern), regexp (TfRegExp), isDefault}], by TfId.
+
+  function likeRegExp(pattern) {
+    const body = String(pattern).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.');
+    return new RegExp('^' + body + '$', 'i');
+  }
+
+  function safeRegExp(pattern) {
+    try { return new RegExp(pattern, 'i'); } catch (e) { return null; }
+  }
+
+  /**
+   * Faces offered to a division + class, in IANSEO's order (getTargets() in Participants/getRows.php): the first one
+   * is the category's default face. Matching: TfRegExp when set, otherwise TfClasses as a LIKE pattern.
+   */
+  function facesFor(div, cls, faces) {
+    const dc = String(div || '') + String(cls || '');
+    if (!dc) return [];
+    const list = (faces || []).filter(f => {
+      if (f.regexp) { const re = safeRegExp(f.regexp); return !!re && re.test(dc); }
+      return likeRegExp(f.classes || '').test(dc);
+    });
+    const key = f => {
+      const c = String(f.classes || ''), c0 = c.charAt(0);
+      return [f.isDefault ? 1 : 0, f.regexp ? 1 : 0, c.toUpperCase() === dc.toUpperCase() ? 1 : 0, c0 !== '_' && c0 !== '%' ? 1 : 0, c0 === '_' ? 1 : 0];
+    };
+    list.sort((a, b) => {
+      const ka = key(a), kb = key(b);
+      for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return kb[i] - ka[i];
+      const ca = String(a.classes || '').toUpperCase(), cb = String(b.classes || '').toUpperCase();
+      if (ca !== cb) return ca < cb ? 1 : -1;
+      return (ca === '%' ? 1 : 0) - (cb === '%' ? 1 : 0);
+    });
+    let hasDefault = false;
+    return list.filter(f => {
+      if (!f.isDefault) return true;
+      if (hasDefault) return false;
+      return (hasDefault = true);
+    });
+  }
+
+  /**
+   * Index of a face for the ##TARGET## line of Partecipants/ListLoad.php: among the faces matching
+   * (div+class LIKE TfClasses OR div+class REGEXP TfRegExp), ordered by TfId. null if not among them.
+   */
+  function faceIndex(div, cls, faceId, faces) {
+    const dc = String(div || '') + String(cls || '');
+    const list = (faces || []).filter(f => likeRegExp(f.classes || '').test(dc) || (f.regexp && (safeRegExp(f.regexp) || /$^/).test(dc)))
+      .sort((a, b) => a.id - b.id);
+    const i = list.findIndex(f => f.id === faceId);
+    return i < 0 ? null : i;
+  }
+
+  const FACE_STANDARD = /^(standard|unique|simple|normal|normale|mono|monospot|defaut|par defaut|default)$/;
+
+  /**
+   * What a face value of the file asks for: '*' the category's default face, 'tri' its triple-spot face, a face name,
+   * '' nothing (empty cell) or '?' not recognised.
+   */
+  function autoFace(value, faces) {
+    const n = norm(value);
+    if (!n) return '';
+    if (FACE_STANDARD.test(n)) return '*';
+    const exact = (faces || []).find(f => norm(f.name) === n);
+    if (exact) return exact.name;
+    if (/tri/.test(n)) return 'tri';
+    return '?';
+  }
+
+  // ---------- session states: waiting list and proposals of another session ----------
+  // Kept in the row's correction (so they survive re-imports of the file):
+  //   wait:      { session: priority }            sessions on the waiting list (1 high, 0 normal, -1 low)
+  //   proposals: { session: { to, until, sentAt } } a full session for which another one is proposed
+  //   moved:     { to: from }                      accepted proposals, to show "requested 1 → entered 2"
+  //   note:      the organiser's private note
+
+  const PRIORITIES = [1, 0, -1];
+  const isObj = o => !!o && typeof o === 'object' && !Array.isArray(o);
+  const copy = o => JSON.parse(JSON.stringify(o || {}));
+
+  // Today as yyyy-mm-dd (local time), and a date n days later.
+  function today(d) {
+    d = d || new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function addDays(day, n) {
+    const [y, m, d] = day.split('-').map(Number);
+    return today(new Date(y, m - 1, d + (+n || 0)));
+  }
+
+  // A correction that holds nothing any more is deleted rather than saved.
+  function isEmptyCorrection(c) {
+    if (!c) return true;
+    const has = o => isObj(o) && Object.keys(o).length > 0;
+    return !has(c.fields) && !c.exclude && !c.identityOk && !c.forceInvalid && !c.paraOk && !c.noBase
+      && !has(c.wait) && !has(c.proposals) && !has(c.moved) && !String(c.note || '').trim() && !c.full;
+  }
+
+  // Corrections of the row's data (not states nor note): shown as "corrected on".
+  function hasEdits(c) {
+    return !!c && ((isObj(c.fields) && Object.keys(c.fields).length > 0) || !!(c.identityOk || c.forceInvalid || c.paraOk || c.noBase));
+  }
+
+  /**
+   * New correction after a waiting-list or proposal action on one session of a row. rec: the processed row (its
+   * current sessions). Returns the correction to save (null when it holds nothing any more).
+   *   wait {priority}       put the session on the waiting list (or change its priority)
+   *   promote               enter it: off the waiting list; if the archer had moved from it to another session,
+   *                         back to it (the other session is left)
+   *   drop                  leave the session: off the waiting list and out of the row's sessions (the row is set
+   *                         aside when it was its last one)
+   *   propose {to, until}   propose another session
+   *   cancel                withdraw the proposal: the requested session is entered after all
+   *   sent                  the proposal was sent
+   *   accept {keepWaiting}  the archer takes the proposed session; keepWaiting: and stays on the full one's list
+   *   refuse {toWait}       the archer refuses: waiting list of the requested session, or leaves it (drop)
+   */
+  function transition(correction, rec, session, action, args) {
+    const c = copy(correction);
+    args = args || {};
+    const s = String(session);
+    c.fields = isObj(c.fields) ? c.fields : {};
+    c.wait = isObj(c.wait) ? c.wait : {};
+    c.proposals = isObj(c.proposals) ? c.proposals : {};
+    c.moved = isObj(c.moved) ? c.moved : {};
+    let sessions = rec.sessions.slice();
+    const setSessions = list => { sessions = [...new Set(list.map(String))].sort((a, b) => a - b); c.fields.sessions = sessions; };
+    const drop = () => {
+      delete c.wait[s];
+      delete c.proposals[s];
+      if (sessions.includes(s)) {
+        const rest = sessions.filter(x => x !== s);
+        if (rest.length) setSessions(rest); else c.exclude = true;
+      }
+      for (const to of Object.keys(c.moved)) if (c.moved[to] === s) delete c.moved[to];
+    };
+    switch (action) {
+      case 'wait':
+        delete c.proposals[s];
+        c.wait[s] = PRIORITIES.includes(+args.priority) ? +args.priority : 0;
+        break;
+      case 'promote': {
+        delete c.wait[s];
+        if (!sessions.includes(s)) {
+          const from = Object.keys(c.moved).find(to => c.moved[to] === s);
+          if (from) { delete c.moved[from]; setSessions(sessions.filter(x => x !== from).concat(s)); }
+          else setSessions(sessions.concat(s));
+        }
+        break;
+      }
+      case 'drop':
+        drop();
+        break;
+      case 'propose':
+        delete c.wait[s];
+        c.proposals[s] = { to: String(args.to), until: args.until, sentAt: null };
+        break;
+      case 'cancel':
+        delete c.proposals[s];
+        break;
+      case 'sent':
+        if (c.proposals[s]) c.proposals[s].sentAt = args.at || new Date().toISOString();
+        break;
+      case 'accept': {
+        const p = c.proposals[s];
+        if (!p) break;
+        delete c.proposals[s];
+        setSessions(sessions.filter(x => x !== s).concat(p.to));
+        c.moved[p.to] = s;
+        if (args.keepWaiting) c.wait[s] = 0;
+        break;
+      }
+      case 'refuse':
+        delete c.proposals[s];
+        if (args.toWait) c.wait[s] = 0; else drop();
+        break;
+    }
+    c.at = new Date().toISOString();
+    return isEmptyCorrection(c) ? null : c;
+  }
+
   /**
    * Resolves and checks every record.
-   * ctx:  { sessions:[{order,name,capacity}], divisions:[{id,name,para}], classes:[{id,divisions}] }
-   * opts: { values:{session:{},division:{}}, corrections:{key:{…}}, licenses:{CODE:{found,…}}, licensesChecked, coMax }
+   * ctx:  { sessions:[{order,name,capacity}], divisions:[{id,name,para}], classes:[{id,divisions}], faces:[…] }
+   * opts: { values:{session:{},division:{},face:{}}, corrections:{key:{…}}, licenses:{CODE:{found,…}}, licensesChecked,
+   *         coMax, today (yyyy-mm-dd, for expired proposals) }
    */
   function processRecords(records, ctx, opts) {
     const values = opts.values || {};
-    const sessionMap = values.session || {}, divisionMap = values.division || {};
+    const sessionMap = values.session || {}, divisionMap = values.division || {}, faceMap = values.face || {};
+    const faces = ctx.faces || [];
+    const day = opts.today || today();
     const classIds = (ctx.classes || []).map(c => c.id);
     const divIds = (ctx.divisions || []).map(d => d.id);
     const paraDivs = new Set((ctx.divisions || []).filter(d => d.para).map(d => d.id));
@@ -326,6 +537,17 @@
         birthDate: isoDate(src.birthDate),
       }, c.full || {}) : null;
 
+      // session states (waiting list, proposals), whatever the row's status
+      const wait = c && isObj(c.wait) ? c.wait : {}, props = c && isObj(c.proposals) ? c.proposals : {};
+      rec.note = (c && c.note) || '';
+      rec.moved = (c && isObj(c.moved)) ? c.moved : {};
+      rec.registeredAt = isoDateTime(src.registeredAt);
+      rec.proposals = rec.sessions.filter(s => props[s]).map(s => Object.assign({ from: s }, props[s], { expired: !!props[s].until && props[s].until < day }));
+      // the waiting list may hold a session the row left (proposal accepted while waiting for the full one)
+      rec.waiting = Object.keys(wait).filter(s => !props[s]).map(s => ({ session: s, priority: +wait[s] || 0 }));
+      rec.inSessions = rec.sessions.filter(s => !(s in wait) && !props[s]);
+      rec.attention = rec.proposals.some(p => p.expired);
+
       if (rec.excluded) return rec;
 
       // blocking errors
@@ -347,6 +569,33 @@
           rec.errors.push(msg('err.classNotAllowed', { c: rec.cls, d: rec.division }));
         }
       }
+      // target face: what the correction or the file asks for, among the faces offered to the category
+      const divClassOk = !!rec.division && !!rec.cls && !rec.errors.some(e => /^err\.(division|class)/.test(e.k));
+      if (faces.length && divClassOk) {
+        const allowed = facesFor(rec.division, rec.cls, faces);
+        const fileValue = src.targetFace;
+        const wanted = f.face != null ? f.face
+          : (faceMap[fileValue] != null && faceMap[fileValue] !== '' ? faceMap[fileValue] : autoFace(fileValue, faces));
+        let face = null;
+        if (!allowed.length) rec.errors.push(msg('err.faceNone', { d: rec.division, c: rec.cls }));
+        else if (wanted === '' || wanted === '?') {
+          face = allowed[0];
+          rec.warnings.push(msg('warn.faceDefault', { v: fileValue, face: face.name }));
+        } else if (wanted === '*') face = allowed[0];
+        else if (wanted === 'tri') {
+          face = allowed.find(x => /tri/.test(norm(x.name))) || null;
+          if (!face) rec.errors.push(msg('err.faceNoTrispot', { d: rec.division, c: rec.cls }));
+        } else {
+          face = allowed.find(x => norm(x.name) === norm(wanted)) || null;
+          if (!face) rec.errors.push(msg('err.faceNotAllowed', { face: wanted, d: rec.division, c: rec.cls }));
+        }
+        if (face) {
+          rec.face = face;
+          rec.faceIndex = faceIndex(rec.division, rec.cls, face.id, faces);
+          if (rec.faceIndex === null) rec.errors.push(msg('err.faceNotImportable', { face: face.name }));
+        }
+      }
+
       if (rec.noBase) {
         if (!rec.full.lastName || !rec.full.firstName) rec.errors.push(msg('err.noBaseName'));
         if (!rec.full.sex) rec.errors.push(msg('err.noBaseSex'));
@@ -390,27 +639,97 @@
 
     for (const r of recs) r.status = r.excluded ? 'excluded' : r.errors.length ? 'error' : r.warnings.length ? 'warn' : 'ok';
     const ok = recs.filter(r => r.status === 'ok');
+    const active = recs.filter(r => !r.excluded);
 
-    // session fill (ok rows only)
-    const sessions = (ctx.sessions && ctx.sessions.length ? ctx.sessions.map(s => String(s.order)) : [...new Set(ok.flatMap(r => r.sessions))])
+    // session fill: entered = ok rows (sessions not waiting nor proposed); a pending proposal holds a place in the
+    // proposed session until its deadline; the waiting list holds none
+    const sessions = (ctx.sessions && ctx.sessions.length ? ctx.sessions.map(s => String(s.order)) : [...new Set(ok.flatMap(r => r.inSessions))])
       .map(s => {
-        const list = ok.filter(r => r.sessions.includes(s));
+        const list = ok.filter(r => r.inSessions.includes(s));
         const def = (ctx.sessions || []).find(x => String(x.order) === s) || {};
+        const faceCounts = {};
+        for (const r of list) if (r.face) faceCounts[r.face.name] = (faceCounts[r.face.name] || 0) + 1;
+        const held = active.filter(r => r.proposals.some(p => p.to === s && !p.expired)).length;
+        const capacity = def.capacity || 0;
         return {
-          session: s, name: def.name || '', capacity: def.capacity || 0, total: list.length,
+          session: s, name: def.name || '', capacity, total: list.length, held,
+          free: capacity ? Math.max(0, capacity - list.length - held) : null,
+          waiting: active.filter(r => r.waiting.some(w => w.session === s)).length,
           co: list.filter(r => r.division === 'CO').length,
-          trispot: list.filter(r => /tri/i.test(r.src.targetFace)),
+          faces: faceCounts,
         };
       });
     const coMax = opts.coMax ? +opts.coMax : 0;
-    sessions.forEach(s => { s.over = !!((s.capacity && s.total > s.capacity) || (coMax && s.co > coMax)); });
+    sessions.forEach(s => { s.over = !!((s.capacity && s.total + s.held > s.capacity) || (coMax && s.co > coMax)); });
 
-    const lines = ok.flatMap(r => r.sessions.map(s => toLine(r, s)));
+    // entry lines; the ##TARGET## lines come after them (targetLines(), they depend on the archers already entered)
+    const lines = ok.flatMap(r => r.inSessions.map(s => toLine(r, s)));
     const count = st => recs.filter(r => r.status === st).length;
     return {
       recs, sessions, lines,
-      counts: { total: recs.length, ok: ok.length, warn: count('warn'), error: count('error'), excluded: count('excluded'), lines: lines.length },
+      counts: {
+        total: recs.length, ok: ok.length, warn: count('warn'), error: count('error'), excluded: count('excluded'), lines: lines.length,
+        waitlist: active.reduce((n, r) => n + r.waiting.length, 0), proposals: active.reduce((n, r) => n + r.proposals.length, 0),
+        attention: active.filter(r => r.attention && r.status === 'ok').length,
+      },
     };
+  }
+
+  /**
+   * ##TARGET## lines of Partecipants/ListLoad.php, sent after the entry lines.
+   * ListLoad's query crosses ALL the archer's entries (same code, division, class) with the matching faces, ordered by
+   * TfId, and updates the entry of row number n ("LIMIT n,1"). An archer with N such entries therefore needs N lines,
+   * n = index×N … index×N+N−1, to get the face on every entry. N is the count after the import: ListLoad's matching
+   * is simulated from the entries already in the competition.
+   *   rows:      ok rows (processRecords), in the order of the entry lines
+   *   existing:  { CODE: [{ id, division, class }] }  entries already in the competition
+   *   overwrite: "Update archers already in the competition" (OverwritePreviousArchers)
+   */
+  function targetLines(rows, existing, overwrite) {
+    const entries = {};
+    for (const code of Object.keys(existing || {})) {
+      entries[code] = (existing[code] || []).slice().sort((a, b) => a.id - b.id)
+        .map(e => ({ division: e.division, cls: e.class, matched: false }));
+    }
+    for (const r of rows) {
+      const list = entries[r.license] || (entries[r.license] = []);
+      for (let i = 0; i < r.inSessions.length; i++) {
+        // ListLoad: first unmatched entry of the same division, otherwise the LAST unmatched one, otherwise a new entry
+        let hit = null;
+        if (overwrite) {
+          const free = list.filter(e => !e.matched);
+          hit = free.find(e => e.division === r.division) || free[free.length - 1] || null;
+        }
+        if (hit) Object.assign(hit, { division: r.division, cls: r.cls, matched: true });
+        else list.push({ division: r.division, cls: r.cls, matched: true });
+      }
+    }
+    const out = new Map();
+    for (const r of rows) {
+      if (!r.inSessions.length || !r.face || r.faceIndex === null || r.faceIndex === undefined) continue;
+      const k = r.license + '|' + r.division + '|' + r.cls;
+      if (out.has(k)) continue;
+      const n = entries[r.license].filter(e => e.division === r.division && e.cls === r.cls).length;
+      const lines = [];
+      for (let i = 0; i < n; i++) lines.push(['##TARGET##', r.license, r.division, r.cls, r.faceIndex * n + i].join('\t'));
+      out.set(k, lines);
+    }
+    return [].concat(...out.values());
+  }
+
+  /**
+   * Waiting list, in the order places are offered: per session, priority (high first), then registration date
+   * (file order when unknown). Returns [{rec, session, priority, rank}].
+   */
+  function waitlist(recs) {
+    const out = [];
+    for (const r of recs) if (!r.excluded) for (const w of r.waiting) out.push({ rec: r, session: w.session, priority: w.priority });
+    out.sort((a, b) => (+a.session - +b.session) || (b.priority - a.priority)
+      || ((a.rec.registeredAt || '\uffff') < (b.rec.registeredAt || '\uffff') ? -1 : (a.rec.registeredAt || '\uffff') > (b.rec.registeredAt || '\uffff') ? 1 : 0)
+      || (a.rec.line - b.rec.line));
+    const rank = {};
+    for (const e of out) e.rank = rank[e.session] = (rank[e.session] || 0) + 1;
+    return out;
   }
 
   // One "List load" line. Short format when the license is in the database (IANSEO fills in the rest);
@@ -426,8 +745,9 @@
   const api = {
     FIELDS, BUILTIN_PROFILES, DEFAULT_DIVISIONS,
     norm, decodeText, parseCSV, detectDelimiter, normLicense, sexCode, buildClass, splitTokens, sessionTokens,
-    isoDate, clubCode, sameName, detectProfile, resolveColumns, columnsToNames, readRecords,
+    isoDate, isoDateTime, clubCode, sameName, detectProfile, resolveColumns, columnsToNames, readRecords,
     defaultSession, defaultDivision, suggestParaDivision, processRecords, toLine,
+    facesFor, faceIndex, autoFace, targetLines, PRIORITIES, today, addDays, isEmptyCorrection, hasEdits, transition, waitlist,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.IICore = api;

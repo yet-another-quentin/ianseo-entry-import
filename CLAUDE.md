@@ -19,6 +19,7 @@ cd dev && IANSEO_DIR=/path/to/copy docker compose up -d --build && IANSEO_DIR=/p
 ```
 
 - `seed.sh` loads `Install/install.sql`, opens the home page once (IANSEO upgrades its schema there; without it `TourOn.php` fails with "Unknown column"), creates competition TEST26 (FR rules, indoor type 6, sub-rule 4 = with para divisions), 4 sessions of 36 places, and licenses matching `tests/fixtures/sportregions.csv`.
+- `MAILER_DIR=../../ianseo-mailer/Mailer` mounts Mailer; Mailpit catches the emails on http://localhost:8025/. Run the test from Mailer's page once to enable sending.
 - `MODULE_DIR` mounts another copy of the module instead of the sources: mandatory to test self-update, which overwrites the module folder. `version.json` may carry `"api": "http://host.docker.internal:PORT"` to point at a fake release server.
 - The IANSEO language can be forced per request with `?Lang=fr` / `?Lang=en`.
 - Reference IANSEO sources (2025-02-10) are in `../ianseo`, read-only.
@@ -32,15 +33,35 @@ In `EntryImport/`:
   - language;
   - qualification sessions, divisions and classes of the competition (with `ClDivisionsAllowed`);
   - license count;
+  - target faces of the competition, session start times;
   - competition settings and corrections, user profiles;
-  - admin flag and update channel.
-- `core.js`: pure logic, UMD (`window.IICore` / `module.exports`). `readRecords` → `processRecords` (corrections, session/division/class resolution, checks, status `ok|warn|error|excluded`) → `toLine`.
+  - admin flag, update channel, Mailer state.
+- `core.js`: pure logic, UMD (`window.IICore` / `module.exports`). `readRecords` → `processRecords` (corrections, session/division/class/face resolution, checks, status `ok|warn|error|excluded`, session states) → `toLine` + `targetLines`.
   - Messages are `{k, p}` i18n keys, never text.
   - Only `ok` rows are sent.
   - `processRecords` only flags unknown licenses with `licensesChecked: true`; until then nothing may become `ok`.
 - `app.js`: single state, full re-render via `innerHTML`. The correction being edited lives in `state.draft` (updated on input events) so async re-renders don't lose input. Use `th()` (escaped params) for HTML, `t()` for plain text.
-- `api.php`: JSON actions `licenses`, `search`, `clubs`, `parse` (xlsx/xls/ods via the PhpSpreadsheet shipped with IANSEO), `settings`, `correction`, `profile`, `update-check`, `update-channel`, `update-install`. Same ACL as ListLoad (`AclParticipants`/`pAdvancedEntries`); update actions require `AclRoot`.
+- `api.php`: JSON actions `licenses`, `search`, `clubs`, `parse` (xlsx/xls/ods via the PhpSpreadsheet shipped with IANSEO), `settings`, `correction`, `proposal-mail`, `profile`, `update-check`, `update-channel`, `update-install`. Same ACL as ListLoad (`AclParticipants`/`pAdvancedEntries`); update actions require `AclRoot`.
 - `menu.php`: included by `Common/Menu.php` (`glob Modules/Custom/*/menu.php`) from both `get_which_menu` and `get_which_run_menu`. In the latter, `$acl` and `$ret['PART']` may be missing. **Any folder under `Modules/Custom/` with a `menu.php` adds a menu entry**, which is why update backups go to `sys_get_temp_dir()`.
+
+## Target faces
+
+- `ii_context()` sends the competition's faces (`TfClasses`, `TfRegExp`, `TfDefault`, by `TfId`).
+- `facesFor()`: faces offered to a division + class, same matching and order as `getTargets()` (`Participants/getRows.php`: `TfRegExp` when set, else `TfClasses` as LIKE); the first one is the default.
+- Resolution: correction `fields.face` (a face name) › value mapping `values.face` › `autoFace()` (`*` default, `tri` the category's face whose name contains "tri", an exact face name, `''`/`?` → default + `warn.faceDefault`). Face names, not ids: the category decides which face of that name applies.
+- `targetLines()` builds the `##TARGET##` lines, after the entry lines (see ListLoad below).
+
+## Waiting list and proposals
+
+Per (row, session), stored in the row's correction, so they survive re-imports (the archer cannot change their entry in SportRegions: the file keeps the requested session):
+- `wait: {session: priority}` (1/0/−1): not imported, no place held. May hold a session the row left (proposal accepted while waiting for the full one).
+- `proposals: {session: {to, until, sentAt}}`: not imported; holds a place in `to` until `until` (`sessions[].held`). Expired → `rec.attention` (shown in "To fix", no place held).
+- `moved: {to: from}`: accepted proposals, shown as "4 (← 2)".
+- `note`: the organiser's private note.
+- Every change goes through `transition()` (pure, tested): `wait`, `promote` (back to a left session when it was moved from it), `drop`, `propose`, `cancel`, `sent`, `accept` (`keepWaiting`), `refuse` (`toWait`). A correction holding nothing is deleted (`isEmptyCorrection()`); "Undo the correction" keeps states and note (`keptStates()` in `app.js`).
+- `rec.inSessions` = sessions that are imported; `waitlist()` gives the order (priority, `registeredAt`, file line) and ranks.
+- Proposal email: `proposal-mail` → `ii_send_proposal()` → Mailer template `entryimport.proposal` (`mailer-templates.php`, check it with Mailer's `tests/templates.test.php`), in the competition's language. Without Mailer, `app.js` shows the text (`proposal.text`). Answer time: `settings.proposalDays` (3).
+- New fields: `email`, `registeredAt` (`isoDateTime()`), `comment` (`join`: several columns put together). `KEY_FIELDS` keeps the row key fallback unchanged.
 
 ## IANSEO behaviour the code relies on (checked in the sources)
 
@@ -52,8 +73,10 @@ In `EntryImport/`:
   - Rows known to the database are therefore sent in the 4-column format.
   - Only "import without database" rows use 16 columns, and only while the license is unknown (`rec.noBase` is false once `rec.base` exists).
 - **Matching**: by `EnCode`, skipping entries already matched during the import. An archer on several sessions (one line per session) gets one entry per session, also on re-import.
+  - With "update" (`OverwritePreviousArchers`), each line takes the first unmatched entry of the same division, else the **last** unmatched one, else inserts. Without it, every line inserts.
+- **Target faces**: an inserted entry gets the category's default face; an updated one keeps its face. `##TARGET##\tcode\tdiv\tclass\tn` crosses **all** entries with that code, division and class with the matching faces (`LIKE TfClasses OR REGEXP TfRegExp`, ordered by `TfId` only) and updates row `LIMIT n,1`. An archer with N such entries needs N lines, n = index×N … index×N+N−1: `targetLines()` simulates the matching above from the entries already there (`licenses` returns them with `id`, `division`, `class`).
 - **License validity**: statuses 0 and 1 valid; status forced to 5 when `LueStatusValidUntil` < `ToWhenFrom` (like `Partecipants/SearchArcher.php`). Labels come from `get_text('Status_n')`, already in the IANSEO language.
-- **Excel dates**: `getFormattedValue()` renders Excel's default date format month-first (`mm-dd-yy`). `ii_read_spreadsheet` returns date cells as `Y-m-d`.
+- **Excel dates**: `getFormattedValue()` renders Excel's default date format month-first (`mm-dd-yy`). `ii_read_spreadsheet` returns date cells as `Y-m-d` (`Y-m-d H:i` when they carry a time).
 
 ## Persistence
 

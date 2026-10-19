@@ -2,6 +2,7 @@
 /*
  * Entry import — JSON API used by the page.
  * Same rights as Partecipants/ListLoad.php; updating the module requires administrator rights.
+ * Actions: licenses, search, clubs, parse, settings, correction, proposal-mail, profile, update-*.
  */
 require_once(dirname(__FILE__, 4) . '/config.php');
 require_once(__DIR__ . '/lib.php');
@@ -54,6 +55,10 @@ try {
 			else $all[$key] = $in['correction'];
 			ii_set('corrections', $all ?: new stdClass());
 			JsonOut(array('ok' => true, 'corrections' => $all ?: new stdClass()));
+
+		case 'proposal-mail':
+			// email proposing another session (Mailer module); the page records it as sent in the row's correction
+			JsonOut(array('ok' => ii_send_proposal(is_array($in['proposal'] ?? null) ? $in['proposal'] : array())));
 
 		case 'profile':
 			$profiles = ii_get_global('profiles', array());

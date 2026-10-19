@@ -24,7 +24,11 @@
   const state = {
     fileName: '', headers: [], rows: [], records: [],
     profiles: C.BUILTIN_PROFILES.concat(Array.isArray(ctx.profiles) ? ctx.profiles : []),
-    profileId: 'custom', map: {}, values: { session: {}, division: {} }, coMax: '',
+    profileId: 'custom', map: {}, values: { session: {}, division: {}, face: {} }, coMax: '',
+    proposalDays: 3, overwrite: true,
+    panel: null,      // "Sessions…" panel of a row: { key, rows: { session: { state, priority, to, until } } }
+    notes: {},        // notes being typed, per row key (kept across re-renders until saved)
+    textFor: null,    // proposal whose text to send by hand is shown: 'key|session'
     corrections: isObj(ctx.corrections) ? ctx.corrections : {},
     licenses: {}, licensePending: false, licenseError: '',
     result: null, filter: 'todo', editing: null, draft: null, search: null, clubs: null,
@@ -61,7 +65,7 @@
     saveTimer = setTimeout(() => {
       api('settings', { settings: {
         profileId: state.profileId, columns: C.columnsToNames(state.headers, state.map),
-        values: state.values, coMax: state.coMax,
+        values: state.values, coMax: state.coMax, proposalDays: state.proposalDays,
       } }).catch(e => console.warn('Entry import: settings not saved', e));
     }, 400);
   }
@@ -95,6 +99,7 @@
   // The competition's saved settings if they fit this file, otherwise the detected profile.
   function applyInitialMapping() {
     const s = isObj(ctx.settings) ? ctx.settings : {};
+    if (+s.proposalDays > 0) state.proposalDays = +s.proposalDays;
     if (s.columns) {
       const map = C.resolveColumns(state.headers, s.columns);
       if (C.FIELDS.filter(f => f.required).every(f => map[f.key] && map[f.key].length)) {
@@ -110,7 +115,7 @@
 
   function normValues(v) {
     v = isObj(v) ? v : {};
-    return { session: isObj(v.session) ? v.session : {}, division: isObj(v.division) ? v.division : {} };
+    return { session: isObj(v.session) ? v.session : {}, division: isObj(v.division) ? v.division : {}, face: isObj(v.face) ? v.face : {} };
   }
 
   function applyProfile(p) {
@@ -178,7 +183,7 @@
     state.editing = key;
     state.search = null;
     state.draft = {
-      license: rec.license, sessions: rec.sessions.slice(), division, cls: rec.cls, sex: rec.sex,
+      license: rec.license, sessions: rec.sessions.slice(), division, cls: rec.cls, sex: rec.sex, face: rec.face ? rec.face.name : '',
       identityOk: !!c.identityOk, forceInvalid: !!c.forceInvalid, paraOk: !!c.paraOk, noBase: !!c.noBase,
       full: Object.assign({
         lastName: rec.src.lastName, firstName: rec.src.firstName, sex: rec.sex, clubCode: C.clubCode(rec.src.club),
@@ -190,7 +195,7 @@
     if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
-  // Only stores what differs from the original row.
+  // Only stores what differs from the original row; states (waiting list, proposals) and the note are kept.
   function draftToCorrection(rec) {
     const orig = C.processRecords([{ line: rec.line, key: rec.key, src: rec.src }], ctx, {
       values: state.values, corrections: {}, licenses: {}, licensesChecked: false,
@@ -202,11 +207,115 @@
     if (d.division !== orig.division) fields.division = d.division;
     if (d.cls !== orig.cls) fields.class = d.cls;
     if (d.sex && d.sex !== orig.sex) fields.sex = d.sex;
-    const c = { at: new Date().toISOString(), fields };
+    // a face chosen here is kept, also when it is the default one the file did not give (it confirms it)
+    const origFace = orig.face ? orig.face.name : '';
+    if (d.face && (d.face !== origFace || orig.warnings.some(m => m.k === 'warn.faceDefault'))) fields.face = d.face;
+    const c = Object.assign(keptStates(rec.correction), { at: new Date().toISOString(), fields });
     CORRECTION_FLAGS.forEach(k => { if (d[k]) c[k] = true; });
     if (d.noBase) c.full = d.full;
     if (rec.correction && rec.correction.exclude) c.exclude = true;
     return c;
+  }
+
+  // What "Undo the correction" keeps: the session states and the note (they are not corrections of the data).
+  function keptStates(c) {
+    const out = {};
+    for (const k of ['wait', 'proposals', 'moved', 'note']) if (c && c[k]) out[k] = JSON.parse(JSON.stringify(c[k]));
+    return out;
+  }
+
+  // ---------- waiting list and proposals ----------
+
+  const freeIn = s => { const x = state.result.sessions.find(y => y.session === String(s)); return x ? x.free : null; };
+
+  // Asks before entering archers in (or proposing) a session without a free place. true = go on.
+  function confirmPlaces(sessions) {
+    const full = [...new Set(sessions.map(String))].filter(s => freeIn(s) !== null && freeIn(s) < 1);
+    return !full.length || window.confirm(t('wait.overConfirm', { sessions: full.join(', ') }));
+  }
+
+  function applyTransition(rec, session, action, args) {
+    return saveCorrection(rec.key, C.transition(rec.correction, rec, session, action, args));
+  }
+
+  function openPanel(rec) {
+    const rows = {};
+    const until = C.addDays(C.today(), state.proposalDays);
+    for (const s of [...new Set(rec.sessions.concat(rec.waiting.map(w => w.session)))].sort((a, b) => a - b)) {
+      const p = rec.proposals.find(x => x.from === s), w = rec.waiting.find(x => x.session === s);
+      rows[s] = p ? { state: 'propose', to: p.to, until: p.until, priority: 0 }
+        : w ? { state: 'wait', priority: w.priority, to: '', until }
+        : { state: 'in', priority: 0, to: '', until };
+    }
+    state.editing = null; state.draft = null;
+    state.panel = { key: rec.key, rows };
+    render();
+  }
+
+  // Applies the panel: each session goes from its current state to the chosen one.
+  function savePanel(rec) {
+    const p = state.panel;
+    let c = rec.correction, r = rec;
+    const entering = [], proposing = [];
+    for (const s of Object.keys(p.rows)) {
+      const want = p.rows[s];
+      const prop = rec.proposals.find(x => x.from === s), w = rec.waiting.find(x => x.session === s);
+      const cur = prop ? 'propose' : w ? 'wait' : 'in';
+      let action = null, args = {};
+      if (want.state === 'wait' && (cur !== 'wait' || w.priority !== +want.priority)) { action = 'wait'; args = { priority: +want.priority }; }
+      else if (want.state === 'propose') {
+        if (!want.to || !want.until) return flash(t('panel.proposalIncomplete'));
+        if (cur !== 'propose' || prop.to !== want.to || prop.until !== want.until) { action = 'propose'; args = { to: want.to, until: want.until }; proposing.push(want.to); }
+      } else if (want.state === 'in' && cur === 'wait') { action = 'promote'; entering.push(s); }
+      else if (want.state === 'in' && cur === 'propose') { action = 'cancel'; entering.push(s); }
+      if (action) {
+        c = C.transition(c, r, s, action, args);
+        // the sessions of the row may have changed (promotion back to a left session)
+        if (c && c.fields && c.fields.sessions) r = Object.assign({}, r, { sessions: c.fields.sessions });
+      }
+    }
+    if (!confirmPlaces(entering.concat(proposing))) return;
+    state.panel = null;
+    return saveCorrection(rec.key, c);
+  }
+
+  // Proposal email through Mailer, then recorded as sent
+  async function sendProposal(rec, p) {
+    state.busy = true;
+    render();
+    try {
+      const res = await api('proposal-mail', { proposal: {
+        email: rec.src.email, firstName: rec.base ? rec.base.firstName : rec.src.firstName, lastName: rec.base ? rec.base.lastName : rec.src.lastName,
+        license: rec.license, category: rec.division + ' ' + rec.cls, from: p.from, to: p.to, until: p.until,
+      } });
+      if (!res.ok) throw new Error(t('proposal.notQueued'));
+      state.busy = false;
+      flash(t('proposal.sent', { email: rec.src.email }));
+      return applyTransition(rec, p.from, 'sent');
+    } catch (e) {
+      state.busy = false;
+      flash(t('proposal.sendFailed', { error: e.message }));
+    }
+  }
+
+  // Text of the proposal, to send by hand when Mailer is not available
+  function proposalText(rec, p) {
+    const fmt = d => new Date(d + 'T00:00:00').toLocaleDateString(locale, { weekday: 'long', day: 'numeric', month: 'long' });
+    return t('proposal.text', {
+      firstName: rec.base ? rec.base.firstName : rec.src.firstName, competition: ctx.tour.name,
+      from: sessionLong(p.from), to: sessionLong(p.to), until: fmt(p.until),
+    });
+  }
+
+  function saveNote(key) {
+    if (!(key in state.notes)) return;
+    const rec = state.result.recs.find(r => r.key === key);
+    const note = state.notes[key].trim();
+    delete state.notes[key];
+    if (!rec || note === (rec.note || '')) return render();
+    const c = Object.assign({}, rec.correction || {}, { note });
+    if (!note) delete c.note;
+    return saveCorrection(key, C.isEmptyCorrection(c) ? null : c);
   }
 
   async function loadClubs() {
@@ -288,6 +397,16 @@
 
   // ---------- import ----------
 
+  // Text sent to List load: the entry lines, then the target faces (they depend on the archers already entered and
+  // on the "update" option, see C.targetLines())
+  function importLines() {
+    const res = state.result;
+    const existing = {};
+    for (const code of Object.keys(state.licenses)) existing[code] = state.licenses[code].entries || [];
+    const rows = res.recs.filter(r => r.status === 'ok');
+    return res.lines.concat(C.targetLines(rows, existing, state.overwrite));
+  }
+
   // Posts the ready lines to IANSEO's own "List load" page, which performs the import and shows its report.
   function submitImport() {
     const res = state.result;
@@ -302,9 +421,9 @@
       if (el.tagName === 'INPUT') el.type = 'hidden';
       form.appendChild(el);
     };
-    add('txtList', res.lines.join('\n'));
+    add('txtList', importLines().join('\n'));
     add('TextList', '1');
-    if (document.getElementById('ii-overwrite').checked) add('OverwritePreviousArchers', '1');
+    if (state.overwrite) add('OverwritePreviousArchers', '1');
     form.style.display = 'none';
     document.body.appendChild(form);
     form.submit();
@@ -321,6 +440,12 @@
   // ---------- rendering ----------
 
   const sessionLabel = s => s.order + (s.name ? ' – ' + s.name : '');
+  // "Session 2 – Saturday afternoon – Saturday 31 October at 15:00" (proposal text)
+  function sessionLong(order) {
+    const s = ctx.sessions.find(x => String(x.order) === String(order)) || { order, name: '' };
+    const start = s.start ? new Date(s.start.replace(' ', 'T')).toLocaleString(locale, { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }) : '';
+    return [t('check.session', { s: s.order }), s.name, start].filter(Boolean).join(' – ');
+  }
 
   function render() {
     const focus = document.activeElement && document.activeElement.id;
@@ -406,46 +531,162 @@
     };
     const table = (head1, head2, list, select) => `<table class="ii-t"><tr><th>${head1}</th><th>${head2}</th></tr>
       ${list.length ? list.map(v => `<tr><td>${v ? esc(v) : th('values.empty')}</td><td>${select(v)}</td></tr>`).join('') : '<tr><td colspan="2" class="ii-muted">—</td></tr>'}</table>`;
+    // target faces: by face name; the category of each row decides which face of that name (or its default) applies
+    const faceValues = (ctx.faces || []).length && (state.map.targetFace || []).length
+      ? [...new Set(state.records.map(r => r.src.targetFace))].sort(sort) : [];
+    const faceNames = [...new Set((ctx.faces || []).map(f => f.name))];
+    const autoLabel = v => {
+      const a = C.autoFace(v, ctx.faces);
+      return a === '*' ? t('values.faceDefault') : a === 'tri' ? t('values.faceTri') : a === '' || a === '?' ? t('values.faceUnknown') : a;
+    };
+    const faceSelect = v => {
+      const cur = state.values.face[v] || '';
+      return `<select data-val="face" data-v="${esc(v)}"><option value="">${th('values.faceAuto', { what: autoLabel(v) })}</option>
+        <option value="*" ${cur === '*' ? 'selected' : ''}>${th('values.faceDefault')}</option>
+        <option value="tri" ${cur === 'tri' ? 'selected' : ''}>${th('values.faceTri')}</option>
+        ${faceNames.map(n => `<option value="${esc(n)}" ${cur === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
+    };
     return `<section class="ii-box"><h3>${th('values.title')}</h3><div class="ii-cols">
       ${table(th('values.sessionInFile'), th('values.sessionIanseo'), sessions, sessionSelect)}
       ${table(th('values.divisionInFile'), th('values.divisionIanseo'), divisions, divisionSelect)}
+      ${faceValues.length ? table(th('values.faceInFile'), th('values.faceIanseo'), faceValues, faceSelect) : ''}
       </div>
       <p><label>${th('values.coMax')} <input type="number" id="ii-comax" min="0" value="${esc(state.coMax)}" placeholder="${esc(t('values.noLimit'))}" style="width:7em"></label></p>
     </section>`;
   }
 
+  const COLS = ['line', 'status', 'license', 'name', 'session', 'division', 'class', 'face', 'details', 'note'];
+
   function renderCheck() {
     const res = state.result, c = res.counts;
     const tab = (k, n) => `<button type="button" class="ii-tab ${state.filter === k ? 'on' : ''}" data-filter="${k}">${th('check.tab.' + k)} <b>${n}</b></button>`;
     const order = { error: 0, warn: 1, ok: 2, excluded: 3 };
-    const recs = res.recs.filter(r => state.filter === 'all' || (state.filter === 'todo' ? (r.status === 'error' || r.status === 'warn') : r.status === state.filter))
-      .sort((a, b) => order[a.status] - order[b.status] || a.line - b.line);
+    const inTab = r => state.filter === 'all' || (state.filter === 'todo' ? (r.status === 'error' || r.status === 'warn' || (r.attention && !r.excluded)) : r.status === state.filter);
+    const recs = res.recs.filter(inTab).sort((a, b) => order[a.status] - order[b.status] || a.line - b.line);
     const chips = res.sessions.map(s => `<span class="ii-chip ${s.over ? 'ii-over' : ''}">${th('check.session', { s: s.session })}${s.name ? ' (' + esc(s.name) + ')' : ''}${th('colon')}
-      <b>${s.total}${s.capacity ? '/' + s.capacity : ''}</b>${state.coMax ? ` · ${th('check.co')} ${s.co}/${esc(state.coMax)}` : (s.co ? ` · ${s.co} ${th('check.co')}` : '')}</span>`).join('');
+      <b>${s.total}${s.held ? ' + ' + th('check.held', { n: s.held }) : ''}${s.capacity ? '/' + s.capacity : ''}</b>${s.waiting ? ' · ' + th('check.waiting', { n: s.waiting }) : ''}${state.coMax ? ` · ${th('check.co')} ${s.co}/${esc(state.coMax)}` : (s.co ? ` · ${s.co} ${th('check.co')}` : '')}</span>`).join('');
+    // places freed (row set aside, session changed…) while archers wait: the organiser decides who goes up
+    const freed = res.sessions.filter(s => s.waiting && s.free > 0).map(s =>
+      `<div class="ii-alert ii-warn">${th('check.waitlistFree', { s: s.session, free: String(s.free), waiting: String(s.waiting) })}
+        <button type="button" class="ii-link" data-filter="waitlist">${th('check.seeWaitlist')}</button></div>`).join('');
     const lic = state.licensePending ? `<p class="ii-muted">${th('check.licensesPending')}</p>`
       : state.licenseError ? `<p class="ii-e">${th('check.licensesError', { error: state.licenseError })} <button type="button" data-act="licenses-retry">${th('check.retry')}</button></p>` : '';
-    const cols = ['line', 'status', 'license', 'name', 'session', 'division', 'class', 'details'].map(k => `<th>${th('check.col.' + k)}</th>`).join('');
-    return `<section class="ii-box"><h3>${th('check.title')}</h3>${lic}
-      <div class="ii-row">${tab('todo', c.error + c.warn)}${tab('ok', c.ok)}${tab('excluded', c.excluded)}${tab('all', c.total)}</div>
+    let body;
+    if (state.filter === 'waitlist') body = renderWaitlist();
+    else if (state.filter === 'proposals') body = renderProposals();
+    else {
+      const cols = COLS.map(k => `<th>${th('check.col.' + k)}</th>`).join('');
+      body = `<div class="ii-scroll"><table class="ii-t ii-list"><tr>${cols}<th></th></tr>
+      ${recs.length ? recs.map(renderRow).join('') : `<tr><td colspan="${COLS.length + 1}" class="ii-muted">${th(state.filter === 'todo' ? 'check.nothingTodo' : 'check.noRows')}</td></tr>`}
+      </table></div>`;
+    }
+    return `<section class="ii-box"><h3>${th('check.title')}</h3>${lic}${freed}
+      <div class="ii-row">${tab('todo', c.error + c.warn + c.attention)}${tab('ok', c.ok)}${tab('waitlist', c.waitlist)}${tab('proposals', c.proposals)}${tab('excluded', c.excluded)}${tab('all', c.total)}
+        <span class="ii-sep"></span><label class="ii-muted">${th('check.proposalDays')} <input type="number" id="ii-propdays" min="1" max="60" value="${esc(state.proposalDays)}" style="width:4em"> ${th('check.days')}</label></div>
       <div class="ii-row">${chips}</div>
-      <div class="ii-scroll"><table class="ii-t ii-list"><tr>${cols}<th></th></tr>
-      ${recs.length ? recs.map(renderRow).join('') : `<tr><td colspan="9" class="ii-muted">${th(state.filter === 'todo' ? 'check.nothingTodo' : 'check.noRows')}</td></tr>`}
-      </table></div></section>`;
+      ${body}</section>`;
+  }
+
+  // The row's sessions with their state: entered, waiting list, proposal pending, moved from another one
+  function sessionCell(r) {
+    const out = r.sessions.map(s => {
+      const p = r.proposals.find(x => x.from === s), w = r.waiting.find(x => x.session === s);
+      if (p) return `<span class="ii-ses ii-ses-prop ${p.expired ? 'ii-ses-late' : ''}" title="${esc(t('ses.proposalTitle', { until: p.until }))}">${esc(s)} → ${esc(p.to)} ?</span>`;
+      if (w) return `<span class="ii-ses ii-ses-wait" title="${esc(t('ses.waitTitle'))}">${esc(s)} ⏳</span>`;
+      const from = r.moved[s];
+      return from ? `<span class="ii-ses" title="${esc(t('ses.movedTitle', { from }))}">${esc(s)} <small>(← ${esc(from)})</small></span>` : `<span class="ii-ses">${esc(s)}</span>`;
+    });
+    for (const w of r.waiting) if (!r.sessions.includes(w.session)) out.push(`<span class="ii-ses ii-ses-wait" title="${esc(t('ses.waitTitle'))}">${esc(w.session)} ⏳</span>`);
+    return out.join(' ');
+  }
+
+  function noteBox(r) {
+    const v = r.key in state.notes ? state.notes[r.key] : r.note;
+    return `<textarea class="ii-note" id="ii-note-${r.line}" data-note="${esc(r.key)}" rows="2" maxlength="1000" placeholder="${esc(t('note.placeholder'))}">${esc(v)}</textarea>`;
+  }
+
+  const recName = r => esc(r.src.lastName) + ' ' + esc(r.src.firstName);
+  const fmtDay = d => (d ? new Date(d.slice(0, 10) + 'T00:00:00').toLocaleDateString(locale, { day: '2-digit', month: '2-digit' }) : '');
+  const fmtStamp = d => (d ? new Date(d.replace(' ', 'T')).toLocaleString(locale, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
+  const sessionOptions = (cur, except) => ctx.sessions.filter(s => String(s.order) !== String(except)).map(s => {
+    const free = freeIn(s.order);
+    return `<option value="${s.order}" ${String(s.order) === String(cur) ? 'selected' : ''}>${esc(sessionLabel(s))}${free !== null ? ' (' + esc(t('panel.free', { n: free })) + ')' : ''}</option>`;
+  }).join('');
+
+  function renderWaitlist() {
+    const list = C.waitlist(state.result.recs);
+    if (!list.length) return `<p class="ii-muted">${th('wait.none')}</p>`;
+    return `<div class="ii-scroll"><table class="ii-t ii-list"><tr><th>${th('check.col.session')}</th><th>${th('wait.rank')}</th><th>${th('check.col.name')}</th>
+      <th>${th('check.col.license')}</th><th>${th('wait.category')}</th><th>${th('wait.registeredAt')}</th><th>${th('wait.priority')}</th><th>${th('check.col.note')}</th><th></th></tr>
+      ${list.map(e => { const r = e.rec; return `<tr class="ii-${r.status}" data-key="${esc(r.key)}" data-session="${esc(e.session)}">
+        <td>${esc(e.session)}</td><td>${e.rank}</td><td>${recName(r)}${r.src.comment ? `<div class="ii-comment">${esc(r.src.comment)}</div>` : ''}</td><td>${esc(r.license)}</td>
+        <td>${esc(r.division)} ${esc(r.cls)}</td><td>${esc(fmtStamp(r.registeredAt)) || `<span class="ii-muted">${th('wait.line', { n: r.line })}</span>`}</td>
+        <td><select data-prio>${C.PRIORITIES.map(p => `<option value="${p}" ${p === e.priority ? 'selected' : ''}>${th('priority.' + p)}</option>`).join('')}</select></td>
+        <td>${noteBox(r)}</td>
+        <td class="ii-nowrap"><button type="button" data-act="promote" ${state.busy ? 'disabled' : ''}>${th('wait.promote')}</button>
+          <button type="button" data-act="panel">${th('action.sessions')}</button>
+          <button type="button" class="ii-link" data-act="drop">${th('wait.drop')}</button></td></tr>`
+        + (state.panel && state.panel.key === r.key ? renderPanel(r) : ''); }).join('')}
+      </table></div><p class="ii-muted">${th('wait.help')}</p>`;
+  }
+
+  function renderProposals() {
+    const list = [];
+    for (const r of state.result.recs) if (!r.excluded) for (const p of r.proposals) list.push({ r, p });
+    if (!list.length) return `<p class="ii-muted">${th('proposal.none')}</p>`;
+    const mailer = ctx.mailer && ctx.mailer.available;
+    return `${mailer ? '' : `<p class="ii-muted">${ctx.mailer && ctx.mailer.installed ? th('proposal.mailerNotReady', { url: ctx.mailer.url }) : th('proposal.noMailer')}</p>`}
+      <div class="ii-scroll"><table class="ii-t ii-list"><tr><th>${th('check.col.name')}</th><th>${th('proposal.from')}</th><th>${th('proposal.to')}</th>
+      <th>${th('proposal.until')}</th><th>${th('proposal.email')}</th><th>${th('check.col.note')}</th><th></th></tr>
+      ${list.map(({ r, p }) => `<tr class="${p.expired ? 'ii-warn' : ''}" data-key="${esc(r.key)}" data-session="${esc(p.from)}">
+        <td>${recName(r)}<div class="ii-muted">${esc(r.license)} · ${esc(r.division)} ${esc(r.cls)}</div></td>
+        <td>${esc(p.from)}</td><td><b>${esc(p.to)}</b></td>
+        <td>${esc(fmtDay(p.until))}${p.expired ? `<div class="ii-w">${th('proposal.expired')}</div>` : ''}</td>
+        <td>${esc(r.src.email) || `<span class="ii-muted">${th('proposal.noEmail')}</span>`}
+          ${p.sentAt ? `<div class="ii-muted">${th('proposal.sentAt', { date: fmtStamp(p.sentAt) })}</div>` : ''}
+          <div class="ii-nowrap">${mailer && r.src.email ? `<button type="button" data-act="send" ${state.busy ? 'disabled' : ''}>${th(p.sentAt ? 'proposal.resend' : 'proposal.send')}</button> ` : ''}
+          <button type="button" class="ii-link" data-act="text">${th('proposal.showText')}</button>
+          ${!p.sentAt ? `<button type="button" class="ii-link" data-act="mark-sent">${th('proposal.markSent')}</button>` : ''}</div></td>
+        <td>${noteBox(r)}</td>
+        <td><div class="ii-nowrap"><button type="button" data-act="accept">${th('proposal.accept')}</button>
+          <button type="button" data-act="accept-wait">${th('proposal.acceptWait')}</button></div>
+          <div class="ii-nowrap"><button type="button" data-act="refuse-wait">${th('proposal.refuseWait')}</button>
+          <button type="button" class="ii-link" data-act="refuse-drop">${th('proposal.refuseDrop')}</button></div></td></tr>`
+        + (state.textFor === r.key + '|' + p.from ? `<tr><td colspan="7"><textarea readonly rows="9" class="ii-text">${esc(proposalText(r, p))}</textarea></td></tr>` : '')).join('')}
+      </table></div>`;
+  }
+
+  // "Sessions…" panel: state of each session of the row
+  function renderPanel(r) {
+    const rows = state.panel.rows;
+    return `<tr id="ii-panel" class="ii-editor" data-key="${esc(r.key)}"><td colspan="${COLS.length + 1}"><div class="ii-form">
+      <table class="ii-t">${Object.keys(rows).map(s => { const x = rows[s]; return `<tr><td><b>${th('check.session', { s })}</b></td>
+        <td><select data-panel-state="${esc(s)}">${['in', 'wait', 'propose'].map(k => `<option value="${k}" ${x.state === k ? 'selected' : ''}>${th('panel.' + k)}</option>`).join('')}</select></td>
+        <td>${x.state === 'wait' ? `<label>${th('wait.priority')} <select data-panel-prio="${esc(s)}">${C.PRIORITIES.map(p => `<option value="${p}" ${p === +x.priority ? 'selected' : ''}>${th('priority.' + p)}</option>`).join('')}</select></label>`
+          : x.state === 'propose' ? `<label>${th('panel.to')} <select data-panel-to="${esc(s)}"><option value="">—</option>${sessionOptions(x.to, s)}</select></label>
+            <label>${th('panel.until')} <input type="date" data-panel-until="${esc(s)}" value="${esc(x.until)}"></label>` : ''}</td></tr>`; }).join('')}</table>
+      <p class="ii-muted">${th('panel.help')}</p>
+      <div class="ii-row ii-actions"><button type="button" data-act="panel-save" ${state.busy ? 'disabled' : ''}>${th('edit.save')}</button>
+        <button type="button" class="ii-link" data-act="panel-close">${th('edit.close')}</button></div></div></td></tr>`;
   }
 
   function renderRow(r) {
     const details = r.errors.map(m => `<div class="ii-e">${msgHtml(m)}</div>`).join('') +
       r.warnings.map(m => `<div class="ii-w">${msgHtml(m)}</div>`).join('') +
       r.infos.map(m => `<div class="ii-muted">${msgHtml(m)}</div>`).join('') +
+      r.proposals.filter(p => p.expired).map(p => `<div class="ii-w">${th('ses.expired', { from: p.from, to: p.to })}</div>`).join('') +
+      (r.src.comment ? `<div class="ii-comment">${esc(r.src.comment)}</div>` : '') +
       (r.base ? `<div class="ii-muted">${th('check.base', { name: r.base.lastName + ' ' + r.base.firstName, club: r.base.club })}</div>` : '') +
-      (r.correction ? `<div class="ii-muted">${th('check.correctedAt', { date: new Date(r.correction.at).toLocaleString(locale) })}</div>` : '');
+      (C.hasEdits(r.correction) ? `<div class="ii-muted">${th('check.correctedAt', { date: new Date(r.correction.at).toLocaleString(locale) })}</div>` : '');
     const actions = r.status === 'excluded'
       ? `<button type="button" data-act="include">${th('action.include')}</button>`
-      : `<button type="button" data-act="edit">${th('action.edit')}</button> <button type="button" class="ii-link" data-act="exclude">${th('action.exclude')}</button>`;
+      : `<button type="button" data-act="edit">${th('action.edit')}</button> <button type="button" data-act="panel">${th('action.sessions')}</button>
+        <button type="button" class="ii-link" data-act="exclude">${th('action.exclude')}</button>`;
     return `<tr class="ii-${r.status}" data-key="${esc(r.key)}"><td>${r.line}</td><td><span class="ii-badge">${th('status.' + r.status)}</span></td>
-      <td>${esc(r.license)}</td><td>${esc(r.src.lastName)} ${esc(r.src.firstName)}</td><td>${esc(r.sessions.join(', '))}</td>
-      <td>${esc(r.division)}</td><td>${esc(r.cls)}</td><td>${details}</td><td class="ii-nowrap">${actions}</td></tr>`
-      + (state.editing === r.key ? renderEditor(r) : '');
+      <td>${esc(r.license)}</td><td>${esc(r.src.lastName)} ${esc(r.src.firstName)}</td><td class="ii-nowrap">${sessionCell(r)}</td>
+      <td>${esc(r.division)}</td><td>${esc(r.cls)}</td><td>${r.face ? esc(r.face.name) : ''}</td><td>${details}</td><td>${noteBox(r)}</td><td class="ii-nowrap">${actions}</td></tr>`
+      + (state.editing === r.key ? renderEditor(r) : '')
+      + (state.panel && state.panel.key === r.key ? renderPanel(r) : '');
   }
 
   function renderEditor(r) {
@@ -461,7 +702,8 @@
         `<tr><td>${esc(x.license)}</td><td>${esc(x.lastName)} ${esc(x.firstName)} (${esc(x.sex)})</td><td>${esc(x.club)}</td><td>${esc(x.birthDate)}</td><td>${esc(x.division)} ${esc(x.class)}</td>
         <td><button type="button" data-pick="${esc(x.license)}">${th('edit.pick')}</button></td></tr>`).join('')}</table>`
       : th('edit.noResult')}</div>`;
-    return `<tr id="ii-edit" class="ii-editor"><td colspan="9"><div class="ii-form">
+    const faces = C.facesFor(d.division, d.cls, ctx.faces);
+    return `<tr id="ii-edit" class="ii-editor"><td colspan="${COLS.length + 1}"><div class="ii-form">
       <div class="ii-grid">
         <label>${th('edit.license')} <span class="ii-row"><input type="text" id="ii-d-license" value="${esc(d.license)}" size="12">
           <button type="button" data-act="search">${th('edit.searchByName')}</button></span>
@@ -474,6 +716,10 @@
           `<option value="${esc(x.id)}" ${x.id === d.division ? 'selected' : ''}>${esc(x.id + ' – ' + x.name)}${x.para ? ' (' + th('edit.para') + ')' : ''}</option>`).join('')}</select></label>
         <label>${th('edit.class')} <select id="ii-d-class"><option value="">—</option>${ctx.classes.map(x =>
           `<option value="${esc(x.id)}" ${x.id === d.cls ? 'selected' : ''}>${esc(x.id + ' – ' + x.name)}</option>`).join('')}</select></label>
+        ${(ctx.faces || []).length ? `<label>${th('edit.face')} <select id="ii-d-face">${faces.length ? faces.map((f, i) =>
+          `<option value="${esc(f.name)}" ${f.name === d.face ? 'selected' : ''}>${esc(f.name)}${i === 0 ? ' (' + th('edit.faceDefault') + ')' : ''}</option>`).join('')
+          : `<option value="">${th('edit.noFace')}</option>`}</select>
+          ${r.src.targetFace ? `<small class="ii-muted">${th('edit.faceInFile', { v: r.src.targetFace })}</small>` : ''}</label>` : ''}
       </div>
       ${r.para ? `<p class="ii-w">${th('edit.paraInfo', { cat: paraCat ? ' (' + paraCat + ')' : null })}</p>
         <label class="ii-chk"><input type="checkbox" id="ii-d-paraOk" ${d.paraOk ? 'checked' : ''}> ${th('edit.paraOk')}</label>` : ''}
@@ -508,22 +754,24 @@
 
   function renderImport() {
     const res = state.result, c = res.counts;
-    const trispot = res.sessions.filter(s => s.trispot.length);
+    const entryLines = res.lines.filter(l => !l.startsWith('##')).length;
+    const faceRows = res.sessions.filter(s => Object.keys(s.faces).length);
     const blocked = !ctx.lookupCount ? 'import.blocked.noLookup'
       : !res.licensesChecked ? 'import.blocked.pending'
       : !res.lines.length ? 'import.blocked.noLines' : '';
     return `<section class="ii-box"><h3>${th('import.title')}</h3>
-      <p>${th('import.summary', { ok: String(c.ok), lines: String(res.lines.length) })}
+      <p>${th('import.summary', { ok: String(c.ok), lines: String(entryLines) })}
         ${c.error + c.warn ? `<span class="ii-w">${th('import.notImported', { n: String(c.error + c.warn) })}</span>` : ''}
-        ${c.excluded ? `<span class="ii-muted">${th('import.excluded', { n: String(c.excluded) })}</span>` : ''}</p>
-      <label class="ii-chk"><input type="checkbox" id="ii-overwrite" checked> ${th('import.overwrite')}</label>
+        ${c.excluded ? `<span class="ii-muted">${th('import.excluded', { n: String(c.excluded) })}</span>` : ''}
+        ${c.waitlist + c.proposals ? `<span class="ii-muted">${th('import.waiting', { wait: String(c.waitlist), prop: String(c.proposals) })}</span>` : ''}</p>
+      <label class="ii-chk"><input type="checkbox" id="ii-overwrite" ${state.overwrite ? 'checked' : ''}> ${th('import.overwrite')}</label>
       <div class="ii-row ii-actions">
-        <button type="button" class="ii-primary" data-act="import" ${blocked ? 'disabled' : ''}>${th('import.button', { n: String(res.lines.length) })}</button>
+        <button type="button" class="ii-primary" data-act="import" ${blocked ? 'disabled' : ''}>${th('import.button', { n: String(entryLines) })}</button>
         ${blocked ? `<span class="ii-muted">(${th(blocked)})</span>` : ''}
       </div>
-      <details><summary>${th('import.preview')}</summary><textarea readonly rows="8">${esc(res.lines.join('\n'))}</textarea></details>
-      ${trispot.length ? `<h4>${th('import.trispot')}</h4>${trispot.map(s => `<p><b>${th('import.trispotSession', { s: s.session })}</b> (${s.trispot.length})${th('colon')}
-        ${s.trispot.map(r => `${esc(r.src.lastName)} ${esc(r.src.firstName)} <span class="ii-muted">${esc(r.license)} · ${esc(r.division)} ${esc(r.cls)}</span>`).join(' ; ')}</p>`).join('')}` : ''}
+      <details ${state.previewOpen ? 'open' : ''} id="ii-preview"><summary>${th('import.preview')}</summary><textarea readonly rows="8">${esc(importLines().join('\n'))}</textarea></details>
+      ${faceRows.length ? `<h4>${th('import.faces')}</h4>${faceRows.map(s => `<p><b>${th('check.session', { s: s.session })}</b>${th('colon')}
+        ${Object.keys(s.faces).sort().map(n => `${esc(n)} <b>${s.faces[n]}</b>`).join(' · ')}</p>`).join('')}` : ''}
     </section>`;
   }
 
@@ -560,6 +808,27 @@
     });
     const coMax = byId('ii-comax');
     if (coMax) coMax.onchange = () => { state.coMax = coMax.value; saveSettings(); recompute(); };
+    const overwrite = byId('ii-overwrite');
+    if (overwrite) overwrite.onchange = () => { state.overwrite = overwrite.checked; render(); };
+    const preview = byId('ii-preview');
+    if (preview) preview.ontoggle = () => { state.previewOpen = preview.open; };
+    const propDays = byId('ii-propdays');
+    if (propDays) propDays.onchange = () => { state.proposalDays = Math.max(1, Math.min(60, +propDays.value || 3)); saveSettings(); render(); };
+    app.querySelectorAll('[data-note]').forEach(el => {
+      el.oninput = () => { state.notes[el.dataset.note] = el.value; };
+      el.onchange = () => saveNote(el.dataset.note);
+    });
+    app.querySelectorAll('select[data-prio]').forEach(el => el.onchange = () => {
+      const tr = el.closest('tr'), rec = state.result.recs.find(r => r.key === tr.dataset.key);
+      if (rec) applyTransition(rec, tr.dataset.session, 'wait', { priority: +el.value });
+    });
+    if (state.panel) {
+      const rows = state.panel.rows;
+      app.querySelectorAll('[data-panel-state]').forEach(el => el.onchange = () => { rows[el.dataset.panelState].state = el.value; render(); });
+      app.querySelectorAll('[data-panel-prio]').forEach(el => el.onchange = () => { rows[el.dataset.panelPrio].priority = +el.value; });
+      app.querySelectorAll('[data-panel-to]').forEach(el => el.onchange = () => { rows[el.dataset.panelTo].to = el.value; });
+      app.querySelectorAll('[data-panel-until]').forEach(el => el.onchange = el.oninput = () => { rows[el.dataset.panelUntil].until = el.value; });
+    }
     app.querySelectorAll('[data-filter]').forEach(b => b.onclick = () => { state.filter = b.dataset.filter; render(); });
 
     // correction draft: track input without re-rendering (except when the form layout changes)
@@ -567,8 +836,11 @@
     if (d) {
       const on = (id, rerender, fn) => { const el = byId(id); if (el) el.oninput = el.onchange = () => { fn(el); if (rerender) render(); }; };
       on('ii-d-license', false, el => { d.license = el.value; });
-      on('ii-d-division', false, el => { d.division = el.value; });
-      on('ii-d-class', false, el => { d.cls = el.value; });
+      // the faces offered depend on the division and class
+      const keepFace = () => { const f = C.facesFor(d.division, d.cls, ctx.faces); if (!f.some(x => x.name === d.face)) d.face = f.length ? f[0].name : ''; };
+      on('ii-d-division', true, el => { d.division = el.value; keepFace(); });
+      on('ii-d-class', true, el => { d.cls = el.value; keepFace(); });
+      on('ii-d-face', false, el => { d.face = el.value; });
       ['identityOk', 'forceInvalid', 'paraOk'].forEach(k => on('ii-d-' + k, false, el => { d[k] = el.checked; }));
       on('ii-d-noBase', true, el => { d.noBase = el.checked; });
       ['lastName', 'firstName', 'sex', 'birthDate', 'club'].forEach(k => on('ii-f-' + k, false, el => { d.full[k] = el.value; }));
@@ -600,11 +872,27 @@
     return el.closest('#ii-edit') ? state.editing : null;
   }
 
+  const sessionOf = el => { const tr = el.closest('tr[data-session]'); return tr ? tr.dataset.session : null; };
+
   function act(action, el) {
     const key = keyOf(el);
     const rec = key && state.result.recs.find(r => r.key === key);
+    const ses = sessionOf(el);
+    const prop = rec && ses ? rec.proposals.find(p => p.from === ses) : null;
     switch (action) {
-      case 'edit': return openEditor(key);
+      case 'edit': state.panel = null; return openEditor(key);
+      case 'panel': return openPanel(rec);
+      case 'panel-close': state.panel = null; return render();
+      case 'panel-save': return savePanel(rec);
+      case 'promote': return confirmPlaces([ses]) && applyTransition(rec, ses, 'promote');
+      case 'drop': return applyTransition(rec, ses, 'drop');
+      case 'send': return sendProposal(rec, prop);
+      case 'mark-sent': return applyTransition(rec, ses, 'sent');
+      case 'text': state.textFor = state.textFor === key + '|' + ses ? null : key + '|' + ses; return render();
+      case 'accept': return applyTransition(rec, ses, 'accept');
+      case 'accept-wait': return applyTransition(rec, ses, 'accept', { keepWaiting: true });
+      case 'refuse-wait': return applyTransition(rec, ses, 'refuse', { toWait: true });
+      case 'refuse-drop': return applyTransition(rec, ses, 'refuse');
       case 'close': state.editing = null; state.draft = null; return render();
       case 'exclude': {
         const c = Object.assign({ fields: {} }, rec.correction || {}, { exclude: true, at: new Date().toISOString() });
@@ -614,10 +902,13 @@
       case 'include': {
         const c = Object.assign({}, rec.correction || {});
         delete c.exclude;
-        const empty = !Object.keys(c.fields || {}).length && !CORRECTION_FLAGS.some(k => c[k]);
-        return saveCorrection(key, empty ? null : c);
+        return saveCorrection(key, C.isEmptyCorrection(c) ? null : c);
       }
-      case 'reset': state.editing = null; state.draft = null; return saveCorrection(key, null);
+      case 'reset': {
+        state.editing = null; state.draft = null;
+        const c = keptStates(rec.correction);
+        return saveCorrection(key, C.isEmptyCorrection(c) ? null : Object.assign(c, { at: new Date().toISOString() }));
+      }
       case 'save': {
         const c = draftToCorrection(rec);
         state.editing = null; state.draft = null;

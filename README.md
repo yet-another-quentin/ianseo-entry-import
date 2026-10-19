@@ -8,9 +8,14 @@ IANSEO module that imports archery competition entries in bulk from a CSV or Exc
 - **License check before import**: every license is looked up in IANSEO's license database (presence, validity on the competition date, name/first name/sex).
 - **Only clean rows are imported.** Rows in error or "to check" are fixed directly in the page:
   - search the license by name;
-  - pick the session, the division (para included) and the class;
+  - pick the session, the division (para included), the class and the target face;
   - import without database for a recent license;
   - set a row aside.
+- **Target faces**: the face of the file ("Standard", "Trispot"…) is mapped to the face of the archer's category and sent to IANSEO, triple spots included. A missing or unknown face gets the default face, to check.
+- **Full sessions**, per session of a row:
+  - **waiting list**: not imported, holds no place; per session, by priority (high, normal, low) then registration date. **Enter** makes it ready for the next import. A banner shows the sessions with free places and archers waiting;
+  - **propose another session**: the place is held in the proposed session until an answer date (3 days by default), without blocking the other rows. The proposal is emailed through the [Mailer](https://github.com/yet-another-quentin/ianseo-mailer) module, or its text is shown to send by hand. The answer is entered in the module: accepts, accepts and stays waiting for the full session, refuses (waiting list or removed). Without an answer by the date, the row is flagged.
+- **Comments**: the archer's comment from the file is shown, and every row has a private note of the organiser.
 - **Corrections are saved in the competition** and re-applied when an updated export is imported again.
 - **Multiple sessions**: an archer may enter several sessions (`1, 3`, or several ticked columns) and gets one entry per session.
 - **Import through IANSEO itself**: lines go through IANSEO's **List load** page (`Partecipants/ListLoad.php`). The module never writes to the archer tables.
@@ -39,10 +44,10 @@ IANSEO updates never touch `Modules/Custom/`, so the module stays installed.
 1. **Prerequisites**: load the license database (Participants › Athletes Sync.) and define the qualification sessions.
 2. **File**: drop the export. The profile is detected; adjust the columns if needed and save them as a profile.
 3. **Value mapping**: map each session value to an IANSEO session and each bow to a division.
-4. **Check**: handle the "To fix" tab with **Fix** or **Set aside**.
+4. **Check**: handle the "To fix" tab with **Fix** or **Set aside**. **Sessions…** puts a session of a row on the waiting list or proposes another one; the **Waiting list** and **Proposals** tabs follow them up.
 5. **Import**: click **Import into IANSEO**. The List load report is shown.
 
-Triple-spot target faces cannot go through List load: the page lists them per session, to enter by hand.
+Everything decided in the module (corrections, waiting list, proposals, notes) is kept in the competition and re-applied to the next export.
 
 ## Updates
 
@@ -78,9 +83,14 @@ Module IANSEO qui importe en lot les inscriptions d'un concours de tir à l'arc 
 - **Vérification des licences avant l'import** : chaque licence est cherchée dans la base des licences d'IANSEO (présence, validité à la date du concours, nom, prénom, sexe).
 - **Seules les lignes sans problème sont importées.** Les lignes en erreur ou « à vérifier » se corrigent dans la page :
   - recherche de la licence par nom ;
-  - choix du départ, de la division (para comprise) et de la classe ;
+  - choix du départ, de la division (para comprise), de la classe et du blason ;
   - import sans base pour une licence récente ;
   - possibilité d'écarter une ligne.
+- **Blasons** : le blason du fichier (« Standard », « Trispot »…) est associé au blason de la catégorie de l'archer et envoyé à IANSEO, trispots compris. Un blason absent ou inconnu prend le blason par défaut, à vérifier.
+- **Départs complets**, pour chaque départ d'une ligne :
+  - **liste d'attente** : non importé, ne prend pas de place ; par départ, selon la priorité (haute, normale, basse) puis la date d'inscription. **Faire monter** le rend prêt pour le prochain import. Un bandeau signale les départs avec des places libres et des archers en attente ;
+  - **proposer un autre départ** : la place est retenue sur le départ proposé jusqu'à une date de réponse (3 jours par défaut), sans bloquer les autres lignes. La proposition part par email avec le module [Mailer](https://github.com/yet-another-quentin/ianseo-mailer), ou son texte s'affiche pour l'envoyer soi-même. La réponse se saisit dans le module : accepte, accepte en restant en attente du départ complet, refuse (liste d'attente ou retiré). Sans réponse à la date, la ligne est signalée.
+- **Commentaires** : le commentaire de l'archer présent dans le fichier est affiché, et chaque ligne a une note privée de l'organisateur.
 - **Les corrections sont enregistrées dans la compétition** et réappliquées quand on importe à nouveau un export mis à jour.
 - **Plusieurs départs** : un archer peut s'inscrire sur plusieurs départs (`1, 3`, ou plusieurs colonnes cochées) et obtient une entrée par départ.
 - **Import par IANSEO lui-même** : les lignes passent par l'écran **Import liste** d'IANSEO. Le module n'écrit jamais dans les tables des archers.
@@ -98,10 +108,10 @@ Module IANSEO qui importe en lot les inscriptions d'un concours de tir à l'arc 
 1. **Prérequis** : charger la base des licences (Participants › Synchronisation des compétiteurs) et définir les sessions de qualification.
 2. **Fichier** : déposer l'export, vérifier le profil et les colonnes.
 3. **Correspondance des valeurs** : associer départs et armes aux sessions et divisions IANSEO.
-4. **Contrôle** : traiter l'onglet « À traiter » avec **Corriger** ou **Écarter**.
+4. **Contrôle** : traiter l'onglet « À traiter » avec **Corriger** ou **Écarter**. **Départs…** met un départ d'une ligne en liste d'attente ou propose un autre départ ; les onglets **Liste d'attente** et **Propositions** en assurent le suivi.
 5. **Import** : cliquer sur **Importer dans IANSEO**.
 
-Les blasons trispot sont à reporter à la main : la page les liste par départ.
+Tout ce qui est décidé dans le module (corrections, liste d'attente, propositions, notes) est conservé dans la compétition et réappliqué à l'export suivant.
 
 ### Mises à jour
 

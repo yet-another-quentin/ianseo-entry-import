@@ -44,5 +44,10 @@ insert into LookUpEntries (LueCode,LueIocCode,LueFamilyName,LueName,LueSex,LueCl
  ('333333E','FRA','AUTRE','Personne',0,0,'1980-01-01','0333004','Club X','CLUB X','','','','','','','CL','S1H','',0,'2027-08-31',1,0),
  ('444444F','FRA','ATTENTE','Zoé',1,0,'2000-03-12','0333004','Club X','CLUB X','','','','','','','CL','S1F','',0,'2026-09-01',1,0),
  ('555555G','FRA','DURAND','Paul',0,0,'1960-01-01','0333005','Club Durand','CLUB D','','','','','','','BB','S3H','',0,'2027-08-31',1,0);
+-- Mailer SMTP settings → Mailpit (only used with MAILER_DIR), stored like ml_param_set() does: serialized JSON string.
+-- Run the test from Mailer's page once to enable the emails. insert ignore: a configuration already set is kept.
+set @j = '{"host":"mailpit","port":1025,"security":"","user":"","password":"","fromEmail":"ianseo@example.org","fromName":"IANSEO (test)","tested":""}';
+insert ignore into ModulesParameters (MpModule, MpParameter, MpTournament, MpValue)
+  values ('Mailer', 'smtp', 0, concat('s:', length(@j), ':"', @j, '";'));
 select ToId, ToCode, ToLocRule, ToIocCode from Tournament where ToId=@t;
 SQL

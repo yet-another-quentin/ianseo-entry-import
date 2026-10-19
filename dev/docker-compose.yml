@@ -1,5 +1,7 @@
 # Test environment: IANSEO_DIR = a COPY of the IANSEO sources (it gets Common/config.inc.php).
 # MODULE_DIR (optional): another copy of the module, e.g. to test self-update without overwriting the sources.
+# MAILER_DIR (optional): the Mailer module (e.g. ../../ianseo-mailer/Mailer) to test the proposal emails; they are caught
+#   by Mailpit (SMTP mailpit:1025, no security), readable on http://localhost:8025/. Without it, the page shows the text.
 #   IANSEO_DIR=/path/to/ianseo-copy docker compose up -d --build && IANSEO_DIR=/path/to/ianseo-copy ./seed.sh  →  http://localhost:8088/
 services:
   db:
@@ -17,3 +19,7 @@ services:
     volumes:
       - ${IANSEO_DIR:?copy of the IANSEO sources}:/var/www/html
       - ${MODULE_DIR:-../EntryImport}:/var/www/html/Modules/Custom/EntryImport
+      - ${MAILER_DIR:-./no-mailer}:/var/www/html/Modules/Custom/Mailer
+  mailpit:
+    image: axllent/mailpit:latest
+    ports: ["8025:8025"]

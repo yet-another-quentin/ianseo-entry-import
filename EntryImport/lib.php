@@ -140,13 +140,24 @@ function ii_context() {
 	$tour = ii_tournament();
 
 	$sessions = array();
-	$q = safe_r_sql("select SesOrder, SesName, SesTar4Session, SesAth4Target from Session
+	$q = safe_r_sql("select SesOrder, SesName, SesTar4Session, SesAth4Target, SesDtStart from Session
 		where SesTournament=$TourId and SesType='Q' order by SesOrder");
 	while ($r = safe_fetch($q)) {
 		$sessions[] = array(
 			'order' => intval($r->SesOrder),
 			'name' => $r->SesName,
 			'capacity' => intval($r->SesTar4Session) * intval($r->SesAth4Target),
+			'start' => ($r->SesDtStart and substr($r->SesDtStart, 0, 4) != '0000') ? $r->SesDtStart : '',
+		);
+	}
+
+	// target faces, by TfId (core.js orders them like IANSEO and computes the ##TARGET## index)
+	$faces = array();
+	$q = safe_r_sql("select TfId, TfName, TfClasses, TfRegExp, TfDefault from TargetFaces where TfTournament=$TourId order by TfId");
+	while ($r = safe_fetch($q)) {
+		$faces[] = array(
+			'id' => intval($r->TfId), 'name' => get_text($r->TfName, 'Tournament', '', true),
+			'classes' => (string)$r->TfClasses, 'regexp' => (string)$r->TfRegExp, 'isDefault' => (bool)$r->TfDefault,
 		);
 	}
 
@@ -180,6 +191,7 @@ function ii_context() {
 		'sessions' => $sessions,
 		'divisions' => $divisions,
 		'classes' => $classes,
+		'faces' => $faces,
 		'lookupCount' => $lookupCount,
 		'settings' => ii_get('settings', new stdClass()),
 		'corrections' => ii_get('corrections', new stdClass()),
@@ -189,7 +201,54 @@ function ii_context() {
 		'version' => $version['version'],
 		'listLoadUrl' => $CFG->ROOT_DIR . 'Partecipants/ListLoad.php',
 		'syncUrl' => $CFG->ROOT_DIR . 'Partecipants/LookupTableLoad.php',
+		'mailer' => array('installed' => ii_mailer_installed(), 'available' => ii_mailer(),
+			'url' => ii_mailer_installed() ? $CFG->ROOT_DIR . 'Modules/Custom/Mailer/index.php' : ''),
 	);
+}
+
+// ---------- emails (optional Mailer module: Modules/Custom/Mailer) ----------
+// Template: mailer-templates.php. Without Mailer (or not configured), the page shows the text to send by hand.
+
+function ii_mailer_installed() {
+	return is_file(dirname(__DIR__) . '/Mailer/api.php');
+}
+
+function ii_mailer() {
+	static $ok = null;
+	if ($ok !== null) return $ok;
+	if (!ii_mailer_installed()) return $ok = false;
+	require_once(dirname(__DIR__) . '/Mailer/api.php');
+	return $ok = (defined('MAILER_API') and MAILER_API >= 1 and mailer_available());
+}
+
+// "Départ 2 – Samedi après-midi – samedi 31 octobre 2026 à 15:00"
+function ii_session_line($TourId, $order, $lang) {
+	$r = safe_fetch(safe_r_sql("select SesName, SesDtStart from Session where SesTournament=" . intval($TourId)
+		. " and SesType='Q' and SesOrder=" . intval($order)));
+	$start = ($r and $r->SesDtStart and substr($r->SesDtStart, 0, 4) != '0000') ? mailer_format_date($r->SesDtStart, $lang, true) : '';
+	return implode(' – ', array_filter(array(($lang === 'fr' ? 'Départ ' : 'Session ') . intval($order), $r ? (string)$r->SesName : '', $start), 'strlen'));
+}
+
+/**
+ * Email proposing another session to an archer whose session is full. $p: email, firstName, lastName, license,
+ * category, from, to (session orders), until (yyyy-mm-dd). Returns true when queued.
+ */
+function ii_send_proposal($p) {
+	if (!ii_mailer()) return false;
+	$email = trim((string)($p['email'] ?? ''));
+	$until = (string)($p['until'] ?? '');
+	if (!filter_var($email, FILTER_VALIDATE_EMAIL) or !preg_match('/^\d{4}-\d{2}-\d{2}$/', $until)) return false;
+	$TourId = intval($_SESSION['TourId']);
+	$lang = mailer_default_lang($TourId);
+	$text = function ($k, $max = 100) use ($p) { return mb_substr(trim(strip_tags((string)($p[$k] ?? ''))), 0, $max); };
+	$vars = array(
+		'archer.firstName' => $text('firstName'), 'archer.lastName' => $text('lastName'), 'archer.license' => $text('license', 20),
+		'category' => $text('category'),
+		'requestedSession' => ii_session_line($TourId, $p['from'] ?? 0, $lang),
+		'proposedSession' => ii_session_line($TourId, $p['to'] ?? 0, $lang),
+		'deadline' => mailer_format_date($until, $lang, true),
+	);
+	return (bool)mailer_queue('entryimport.proposal', $TourId, $email, $vars, array('lang' => $lang, 'ref' => 'proposal'));
 }
 
 // ---------- license database ----------
@@ -244,11 +303,13 @@ function ii_lookup_licenses($codes) {
 		}
 
 		// archers already in the competition (information only)
-		$q = safe_r_sql("select EnCode, EnDivision, QuSession from Entries inner join Qualifications on QuId=EnId
+		// (also used to compute the ##TARGET## lines: ListLoad's matching is simulated from them, see targetLines())
+		$q = safe_r_sql("select EnId, EnCode, EnDivision, EnClass, QuSession from Entries inner join Qualifications on QuId=EnId
 			where EnTournament=$TourId and EnCode in ($in) order by QuSession");
 		while ($r = safe_fetch($q)) {
 			$code = strtoupper($r->EnCode);
-			if (isset($out[$code])) $out[$code]['entries'][] = array('session' => intval($r->QuSession), 'division' => $r->EnDivision);
+			if (isset($out[$code])) $out[$code]['entries'][] = array('id' => intval($r->EnId), 'session' => intval($r->QuSession),
+				'division' => $r->EnDivision, 'class' => $r->EnClass);
 		}
 	}
 	return $out;
@@ -296,7 +357,7 @@ function ii_clubs() {
 
 /**
  * Formatted cell values, except dates: Excel's default date format comes out month-first (mm-dd-yy),
- * so date cells are returned as yyyy-mm-dd.
+ * so date cells are returned as yyyy-mm-dd (yyyy-mm-dd hh:mm when they carry a time).
  */
 function ii_read_spreadsheet($path) {
 	global $CFG;
@@ -310,7 +371,9 @@ function ii_read_spreadsheet($path) {
 		foreach ($cells as $cell) {
 			$raw = $cell->getValue();
 			if (is_numeric($raw) and \PhpOffice\PhpSpreadsheet\Shared\Date::isDateTime($cell)) {
-				$values[] = \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject($raw)->format('Y-m-d');
+				// with its time when there is one (registration date and time)
+				$dt = \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject($raw);
+				$values[] = $dt->format($dt->format('H:i') === '00:00' ? 'Y-m-d' : 'Y-m-d H:i');
 			} else {
 				$values[] = (string)$cell->getFormattedValue();
 			}
